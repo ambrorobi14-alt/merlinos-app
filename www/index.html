@@ -15,6 +15,21 @@
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-storage-compat.js"></script>
   <meta name="referrer" content="strict-origin-when-cross-origin">
+  <style>
+    @media print {
+      body { background: #ffffff !important; color: #0f172a !important; }
+      header, button, input, select, textarea { display: none !important; }
+      .bg-slate-900, .bg-slate-950, .bg-slate-900\/50, .bg-slate-950\/80 {
+        background: #ffffff !important;
+        border-color: #cbd5e1 !important;
+        color: #0f172a !important;
+        box-shadow: none !important;
+      }
+      .text-white, .text-slate-200, .text-slate-300, .text-cyan-300, .text-cyan-400 {
+        color: #0f172a !important;
+      }
+    }
+  </style>
 </head>
 <body class="bg-slate-950 text-slate-100 font-sans antialiased selection:bg-emerald-500 selection:text-black">
   <div id="root"></div>
@@ -33,7 +48,9 @@
     };
 
     const COACH_EMAIL = "ambrorobi1410@gmail.com";
-
+    // Inserisci qui l'URL della tua funzione serverless per l'Audit AI (es. "/.netlify/functions/scientific-audit")
+    const SCIENTIFIC_AUDIT_URL = "";
+const DELETE_VIDEO_ENDPOINT = "/.netlify/functions/delete-cloudinary-video";
     let db = null;
     let auth = null;
     let storage = null;
@@ -112,9 +129,9 @@
       7:   { 1: 89.2,  2: 86.3, 3: 83.7, 4: 81.1, 5: 78.6, 6: 76.2, 7: 73.9, 8: 70.7, 9: 68.0, 10: 65.3, 11: 62.6, 12: 59.9 },
       6.5: { 1: 87.8,  2: 85.0, 3: 82.4, 4: 79.9, 5: 77.4, 6: 75.1, 7: 72.3, 8: 69.4, 9: 66.7, 10: 64.0, 11: 61.3, 12: 58.6 },
       6:   { 1: 86.3,  2: 83.7, 3: 81.1, 4: 78.6, 5: 76.2, 6: 73.9, 7: 70.7, 8: 68.0, 9: 65.3, 10: 62.6, 11: 59.9, 12: 57.2 },
-      5.5: { 1: 85.0,  2: 82.4, 3: 79.9, 4: 77.4, 5: 72.3, 6: 70.7, 7: 69.4, 8: 66.7, 9: 64.0, 10: 61.3, 11: 58.6, 12: 55.8 },
+      5.5: { 1: 85.0,  2: 82.4, 3: 79.9, 4: 77.4, 5: 75.1, 6: 72.3, 7: 69.4, 8: 66.7, 9: 64.0, 10: 61.3, 11: 58.6, 12: 55.8 },
       5:   { 1: 83.7,  2: 81.1, 3: 78.6, 4: 76.2, 5: 73.9, 6: 70.7, 7: 68.0, 8: 65.3, 9: 62.6, 10: 59.9, 11: 57.2, 12: 54.4 },
-      4.5: { 1: 82.4,  2: 79.9, 3: 77.4, 4: 75.1, 5: 72.3, 6: 69.4, 7: 66.7, 8: 64.0, 9: 61.3, 10: 53.0, 11: 54.4, 12: 53.0 },
+      4.5: { 1: 82.4,  2: 79.9, 3: 77.4, 4: 75.1, 5: 72.3, 6: 69.4, 7: 66.7, 8: 64.0, 9: 61.3, 10: 58.6, 11: 54.4, 12: 53.0 },
       4:   { 1: 81.1,  2: 78.6, 3: 76.2, 4: 73.9, 5: 70.7, 6: 68.0, 7: 65.3, 8: 62.6, 9: 59.9, 10: 57.2, 11: 54.4, 12: 51.6 }
     };
 
@@ -124,12 +141,70 @@
       const rpeVal = parseFloat(rpe) || 10;
       if (w <= 0 || r <= 0) return 0;
       
-      const rpeKey = Object.keys(RPE_CHART).map(Number).sort((a,b) => b-a).find(k => k <= rpeVal) || 10;
+     const sortedRpes = Object.keys(RPE_CHART).map(Number).sort((a, b) => b - a);
+      const rpeKey = rpeVal < 4 ? 4 : (sortedRpes.find(k => k <= rpeVal) || 10);
       const repKey = Math.min(Math.max(r, 1), 12);
       const pct = RPE_CHART[rpeKey] ? RPE_CHART[rpeKey][repKey] : null;
 
       if (!pct) return Math.round(w * (1 + r / 30));
       return Math.round((w / pct) * 100);
+    };
+
+    const computeWeeklyTrendsFromLogs = (logsList, weeksArray) => {
+      const rawWeeks = weeksArray.map(wNum => {
+        const weekLogs = logsList.filter(l => l.weekNum === wNum || l.week === `W${wNum}`);
+        if (weekLogs.length === 0) {
+          return { week: `W${wNum}`, weekNum: wNum, tonnage: 0, srpe: 0, percent1RM: 0, monotony: 0, hooper: 0, acwr: 0, setsCount: 0 };
+        }
+
+        const weekTonnage = weekLogs.reduce((sum, l) => sum + (l.tonnage || 0), 0);
+        const avgPercent = Math.round(weekLogs.reduce((sum, l) => sum + (l.percent1RM || 0), 0) / weekLogs.length);
+        const lastHooper = weekLogs[weekLogs.length - 1].hooper || 0;
+
+        const sessionsMap = {};
+        weekLogs.forEach(l => {
+          const sKey = l.trainingDate || l.day || 'Seduta';
+          if (!sessionsMap[sKey]) sessionsMap[sKey] = { rpes: [], duration: l.sessionDurationMinutes || 60 };
+          sessionsMap[sKey].rpes.push(parseFloat(l.actualRpe || l.rpe) || 0);
+          if (l.sessionDurationMinutes) sessionsMap[sKey].duration = l.sessionDurationMinutes;
+        });
+
+        const dailyLoads = Object.values(sessionsMap).map(s => {
+          const avgSessionRpe = s.rpes.reduce((a, b) => a + b, 0) / (s.rpes.length || 1);
+          return Math.round(avgSessionRpe * s.duration);
+        });
+
+        const weeksRPE = dailyLoads.reduce((a, b) => a + b, 0);
+        const sevenDaysLoads = [...dailyLoads];
+        while (sevenDaysLoads.length < 7) sevenDaysLoads.push(0);
+        const slice7 = sevenDaysLoads.slice(0, 7);
+
+        const mean7 = slice7.reduce((a, b) => a + b, 0) / 7;
+        const variance7 = slice7.reduce((a, b) => a + Math.pow(b - mean7, 2), 0) / 7;
+        const stdDev7 = Math.sqrt(variance7);
+        const monotony = stdDev7 > 0 ? parseFloat((mean7 / stdDev7).toFixed(2)) : 0;
+
+        return {
+          week: `W${wNum}`,
+          weekNum: wNum,
+          tonnage: weekTonnage,
+          srpe: weeksRPE,
+          percent1RM: avgPercent,
+          monotony,
+          hooper: lastHooper,
+          acwr: 0,
+          setsCount: weekLogs.length
+        };
+      });
+
+      return rawWeeks.map((curr, idx) => {
+        if (curr.srpe === 0) return curr;
+        const windowStart = Math.max(0, idx - 3);
+        const activeWindow = rawWeeks.slice(windowStart, idx + 1).filter(w => w.srpe > 0);
+        const chronicMean = activeWindow.reduce((sum, w) => sum + w.srpe, 0) / (activeWindow.length || 1);
+        const acwr = chronicMean > 0 ? parseFloat((curr.srpe / chronicMean).toFixed(2)) : 1.0;
+        return { ...curr, acwr };
+      });
     };
 
     const EXCEL_FULL_DATABASE = [
@@ -523,6 +598,16 @@
       return str.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').trim().slice(0, maxLen);
     };
 
+const safeJsonParse = (storageKey, fallback) => {
+      try {
+        const raw = localStorage.getItem(storageKey);
+        return raw ? JSON.parse(raw) : fallback;
+      } catch (e) {
+        console.warn(`Cache locale corrotta per ${storageKey}, ripristinato default.`, e);
+        localStorage.removeItem(storageKey);
+        return fallback;
+      }
+    };
     const formatTimeHHMM = (ts) => {
       if (!ts) return '';
       const d = new Date(ts);
@@ -837,7 +922,10 @@
       const [selectedArchiveReport, setSelectedArchiveReport] = useState(null);
       const [archiveAthleteFilter, setArchiveAthleteFilter] = useState('ALL');
       const [archiveWeekTab, setArchiveWeekTab] = useState(1);
-
+const [athleteVideos, setAthleteVideos] = useState([]);
+const [videoArchiveAthleteFilter, setVideoArchiveAthleteFilter] = useState('ALL');
+const [videoArchiveWeekFilter, setVideoArchiveWeekFilter] = useState('ALL');
+const [deletingVideoId, setDeletingVideoId] = useState(null);
       const urlParams = new URLSearchParams(window.location.search);
       const urlAthlete = sanitizeText(urlParams.get('atleta'), 80);
 
@@ -1039,88 +1127,193 @@
       const [uploadingVideoExId, setUploadingVideoExId] = useState(null);
       const [videoUploadProgress, setVideoUploadProgress] = useState(0);
 
-      const handleUploadExerciseVideo = async (file, exItem) => {
-        if (!file || !exItem) return;
-
-        const CLOUDINARY_CLOUD_NAME = "m4ivwq6f";
-        const CLOUDINARY_UPLOAD_PRESET = "video_app";
-
-        if (file.size === 0) {
-          alert("Il telefono ha restituito un file vuoto (0 byte). Controlla i permessi Media/Video dell'app nelle impostazioni Android.");
-          return;
-        }
-        if (file.size > 100 * 1024 * 1024) {
-          alert("Il video supera il limite gratuito di 100 MB di Cloudinary. Prova a comprimerlo o accorciarlo.");
-          return;
-        }
-
-        const safeAth = getAthleteDocId(currentActiveTarget);
-        const wNum = exItem.weekNum || activeDisplayWeek || 1;
-
-        setUploadingVideoExId(exItem.id);
-        setVideoUploadProgress(1);
-
-        const formData = new FormData();
-        formData.append("file", file);
-        formData.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
-        formData.append("folder", `exercise_videos/${safeAth}/W${wNum}`);
-
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/video/upload`, true);
-
-        xhr.upload.onprogress = (event) => {
-          if (event.lengthComputable && event.total > 0) {
-            const pct = Math.max(1, Math.round((event.loaded / event.total) * 100));
-            setVideoUploadProgress(pct);
+      const compressVideoOnPhone = (file, onProgress) => {
+        return new Promise((resolve) => {
+          // Se il file pesa già meno di 8 MB o il browser non supporta MediaRecorder, invia così com'è
+          if (file.size <= 8 * 1024 * 1024 || typeof MediaRecorder === 'undefined') {
+            resolve(file);
+            return;
           }
-        };
 
-        xhr.onload = async () => {
-          try {
-            if (xhr.status >= 200 && xhr.status < 300) {
-              const response = JSON.parse(xhr.responseText);
-              const downloadURL = response.secure_url;
-              setAthleteVideoUrl(downloadURL);
+          let settled = false;
+          let activeRecorder = null;
+          let activeRafId = null;
 
-              if (db) {
-                const existing = athleteLogs.filter(l =>
-                  l.athlete.toLowerCase() === currentActiveTarget.toLowerCase() &&
-                  (l.week === `W${wNum}` || l.weekNum === wNum) &&
-                  l.exercise.toLowerCase() === exItem.exercise.toLowerCase()
-                );
-                for (const logDoc of existing) {
-                  if (logDoc.id) {
-                    await db.collection('logs').doc(logDoc.id).update({ userVideoUrl: downloadURL });
-                  }
-                }
+          const video = document.createElement('video');
+          video.preload = 'metadata';
+          video.muted = true;
+          video.playsInline = true;
+          const objectUrl = URL.createObjectURL(file);
+
+          const safeResolve = (resFile) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(fallbackTimer);
+            if (activeRafId) cancelAnimationFrame(activeRafId);
+            try { video.pause(); } catch (_) {}
+            try {
+              if (activeRecorder && activeRecorder.state !== 'inactive') activeRecorder.stop();
+            } catch (_) {}
+            URL.revokeObjectURL(objectUrl);
+            resolve(resFile);
+          };
+
+          const fallbackTimer = setTimeout(() => {
+            safeResolve(file);
+          }, 15000);
+          video.src = objectUrl;
+
+          video.onerror = () => {
+            URL.revokeObjectURL(objectUrl);
+            safeResolve(file);
+          };
+
+          video.onloadedmetadata = () => {
+            const maxSide = 720;
+            let width = video.videoWidth || 720;
+            let height = video.videoHeight || 1280;
+
+            if (width > maxSide || height > maxSide) {
+              if (width >= height) {
+                height = Math.round((height * maxSide) / width);
+                width = maxSide;
+              } else {
+                width = Math.round((width * maxSide) / height);
+                height = maxSide;
               }
-            } else {
-              let errMsg = `Errore HTTP ${xhr.status}`;
-              try {
-                const errJson = JSON.parse(xhr.responseText);
-                if (errJson.error && errJson.error.message) errMsg = errJson.error.message;
-              } catch (_) {}
-              alert(`Caricamento Cloudinary fallito: ${errMsg}`);
             }
-          } finally {
-            setUploadingVideoExId(null);
-            setVideoUploadProgress(0);
-          }
-        };
+            // Dimensioni pari obbligatorie per i codec video
+            width = width - (width % 2);
+            height = height - (height % 2);
 
-        xhr.onerror = () => {
-          setUploadingVideoExId(null);
-          setVideoUploadProgress(0);
-          alert("Errore di rete durante l'invio a Cloudinary. Controlla la connessione Internet.");
-        };
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
 
-        xhr.send(formData);
+            if (!canvas.captureStream) {
+              URL.revokeObjectURL(objectUrl);
+              resolve(file);
+              return;
+            }
+
+            const mimeTypes = [
+              'video/mp4;codecs=avc1',
+              'video/mp4',
+              'video/webm;codecs=vp9',
+              'video/webm;codecs=vp8',
+              'video/webm'
+            ];
+            const selectedMime = mimeTypes.find(t => MediaRecorder.isTypeSupported(t)) || '';
+
+            const stream = canvas.captureStream(30);
+            let recorder;
+            try {
+              recorder = new MediaRecorder(stream, {
+                ...(selectedMime ? { mimeType: selectedMime } : {}),
+                videoBitsPerSecond: 1200000 // 1.2 Mbps = ~4.5 MB ogni 30 secondi
+              });
+            } catch (e) {
+              URL.revokeObjectURL(objectUrl);
+              resolve(file);
+              return;
+            }
+
+            const chunks = [];
+            recorder.ondataavailable = (e) => {
+              if (e.data && e.data.size > 0) chunks.push(e.data);
+            };
+
+            recorder.onstop = () => {
+              URL.revokeObjectURL(objectUrl);
+              const finalType = selectedMime || 'video/mp4';
+              const ext = finalType.includes('webm') ? 'webm' : 'mp4';
+              const blob = new Blob(chunks, { type: finalType });
+              if (blob.size > 0 && blob.size < file.size) {
+                resolve(new File([blob], `video_compresso.${ext}`, { type: finalType }));
+              } else {
+                resolve(file);
+              }
+            };
+
+          activeRecorder = recorder;
+            const drawFrame = () => {
+              if (settled || video.paused || video.ended) return;
+              ctx.drawImage(video, 0, 0, width, height);
+              if (onProgress && video.duration > 0 && !settled) {
+                onProgress(Math.min(99, Math.round((video.currentTime / video.duration) * 100)));
+              }
+              activeRafId = requestAnimationFrame(drawFrame);
+            };
+
+            video.onended = () => {
+              if (activeRafId) cancelAnimationFrame(activeRafId);
+              if (recorder.state !== 'inactive') recorder.stop();
+            };
+
+            recorder.start(500);
+            video.play().then(() => {
+              drawFrame();
+            }).catch(() => {
+              if (activeRafId) cancelAnimationFrame(activeRafId);
+              if (recorder.state !== 'inactive') recorder.stop();
+              safeResolve(file);
+            });
+          };
+        });
       };
 
-      const handleRemoveExerciseVideo = async (exItem) => {
-        if (!confirm("Rimuovere il video allegato a questo esercizio?")) return;
-        setAthleteVideoUrl('');
-        const wNum = exItem.weekNum || activeDisplayWeek || 1;
+const handleUploadExerciseVideo = async (file, exItem) => {
+  if (!file || !exItem) return;
+
+  const CLOUDINARY_CLOUD_NAME = "m4ivwq6f";
+  const CLOUDINARY_UPLOAD_PRESET = "video_app";
+
+  if (file.size === 0) {
+    alert("Il telefono ha restituito un file vuoto (0 byte). Controlla i permessi Media/Video dell'app.");
+    return;
+  }
+  if (file.size > 120 * 1024 * 1024) {
+    alert("Il video originale supera i 120 MB. Taglia la clip a max 45-60 secondi prima di inviarla.");
+    return;
+  }
+
+  const safeAth = getAthleteDocId(currentActiveTarget);
+  const wNum = exItem.weekNum || activeDisplayWeek || 1;
+
+  setUploadingVideoExId(exItem.id);
+  setVideoUploadProgress(1);
+
+  const fileToUpload = await compressVideoOnPhone(file, (compPct) => {
+    setVideoUploadProgress(Math.max(1, Math.round(compPct * 0.5)));
+  });
+
+  const formData = new FormData();
+  formData.append("file", fileToUpload);
+  formData.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
+  formData.append("folder", `exercise_videos/${safeAth}/W${wNum}`);
+
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/video/upload`, true);
+
+  xhr.upload.onprogress = (event) => {
+    if (event.lengthComputable && event.total > 0) {
+      const upPct = Math.round((event.loaded / event.total) * 50);
+      setVideoUploadProgress(Math.min(99, 50 + upPct));
+    }
+  };
+
+  xhr.onload = async () => {
+    try {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        const response = JSON.parse(xhr.responseText);
+        const downloadURL = response.secure_url;
+        const publicId = response.public_id || "";
+        const bytes = Number(response.bytes) || fileToUpload.size || 0;
+        const duration = Number(response.duration) || 0;
+
+        setAthleteVideoUrl(downloadURL);
+
         if (db) {
           const existing = athleteLogs.filter(l =>
             l.athlete.toLowerCase() === currentActiveTarget.toLowerCase() &&
@@ -1129,12 +1322,132 @@
           );
           for (const logDoc of existing) {
             if (logDoc.id) {
-              await db.collection('logs').doc(logDoc.id).update({ userVideoUrl: '' });
+              await db.collection('logs').doc(logDoc.id).update({ userVideoUrl: downloadURL });
             }
           }
-        }
-      };
 
+          await db.collection('athlete_videos').add({
+            athlete: currentActiveTarget.trim(),
+            athleteEmail: getAthleteTechEmail(currentActiveTarget),
+            weekNum: wNum,
+            week: `W${wNum}`,
+            day: exItem.day || "",
+            exercise: exItem.exercise,
+            secureUrl: downloadURL,
+            publicId,
+            bytes,
+            duration,
+            uploadedAt: Date.now(),
+            uploadedDateISO: getTodayISO(),
+            notesSnapshot: athleteNotes || ""
+          });
+        }
+      } else {
+        let errMsg = `Errore HTTP ${xhr.status}`;
+        try {
+          const errJson = JSON.parse(xhr.responseText);
+          if (errJson.error && errJson.error.message) errMsg = errJson.error.message;
+        } catch (_) {}
+        alert(`Caricamento Cloudinary fallito: ${errMsg}`);
+      }
+    } finally {
+      setUploadingVideoExId(null);
+      setVideoUploadProgress(0);
+    }
+  };
+
+  xhr.onerror = () => {
+    setUploadingVideoExId(null);
+    setVideoUploadProgress(0);
+    alert("Errore di rete durante l'invio a Cloudinary. Controlla la connessione Internet.");
+  };
+
+  xhr.send(formData);
+};
+
+const handleRemoveExerciseVideo = async (exItem) => {
+  if (!confirm("Rimuovere il video allegato da questa scheda?")) return;
+  setAthleteVideoUrl('');
+  const wNum = exItem.weekNum || activeDisplayWeek || 1;
+  if (db) {
+    const existing = athleteLogs.filter(l =>
+      l.athlete.toLowerCase() === currentActiveTarget.toLowerCase() &&
+      (l.week === `W${wNum}` || l.weekNum === wNum) &&
+      l.exercise.toLowerCase() === exItem.exercise.toLowerCase()
+    );
+    for (const logDoc of existing) {
+      if (logDoc.id) {
+        await db.collection('logs').doc(logDoc.id).update({ userVideoUrl: '' });
+      }
+    }
+  }
+};
+
+const handleDownloadArchiveVideo = async (videoItem) => {
+  try {
+    const cleanAth = (videoItem.athlete || "Atleta").replace(/[^a-zA-Z0-9_-]/g, "_");
+    const cleanEx = (videoItem.exercise || "Esercizio").replace(/[^a-zA-Z0-9_-]/g, "_");
+    const fileName = `${cleanAth}_W${videoItem.weekNum || 1}_${cleanEx}.mp4`;
+
+    const res = await fetch(videoItem.secureUrl);
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+  } catch (err) {
+    const attachUrl = videoItem.secureUrl.replace("/video/upload/", "/video/upload/fl_attachment/");
+    window.open(attachUrl, "_blank", "noopener,noreferrer");
+  }
+};
+
+const handleDeleteVideoFromCloudAndApp = async (videoItem) => {
+  if (!videoItem) return;
+  const mb = ((videoItem.bytes || 0) / (1024 * 1024)).toFixed(2);
+  if (!confirm(`Eliminare definitivamente questo video di ${videoItem.athlete} (${videoItem.exercise}, ${mb} MB) sia dall'app che da Cloudinary?\n\nL'azione è irreversibile e libererà spazio sul cloud.`)) {
+    return;
+  }
+
+  setDeletingVideoId(videoItem.id);
+  try {
+    if (videoItem.publicId) {
+      const currentUser = auth && auth.currentUser;
+      const idToken = currentUser ? await currentUser.getIdToken() : "";
+      const res = await fetch(DELETE_VIDEO_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${idToken}`
+        },
+        body: JSON.stringify({ publicId: videoItem.publicId })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Errore durante la rimozione su Cloudinary");
+      }
+    }
+
+    if (db) {
+      if (videoItem.id) {
+        await db.collection('athlete_videos').doc(videoItem.id).delete();
+      }
+      const linkedLogs = athleteLogs.filter(l => l.userVideoUrl === videoItem.secureUrl);
+      for (const l of linkedLogs) {
+        if (l.id) {
+          await db.collection('logs').doc(l.id).update({ userVideoUrl: '' });
+        }
+      }
+    }
+  } catch (err) {
+    alert(`Impossibile eliminare il video dal cloud: ${err.message}`);
+  } finally {
+    setDeletingVideoId(null);
+  }
+};
       const [protocol, setProtocol] = useState([]);
       const [athleteLogs, setAthleteLogs] = useState([]);
       const [completedDaysMap, setCompletedDaysMap] = useState(() => {
@@ -1182,13 +1495,14 @@
           if (overrideExId && ex.id === overrideExId && Array.isArray(overrideSetsData)) {
             doneSetsForEx = overrideSetsData.filter(s => (parseInt(s.reps) || 0) > 0).length;
           } else {
-            const exLogs = athleteLogs.filter(
+           const exLogs = athleteLogs.filter(
               l =>
                 l.athlete.toLowerCase() === athName.toLowerCase() &&
                 (l.weekNum === wNum || l.week === `W${wNum}`) &&
+                (!l.day || l.day === dayName) &&
                 l.exercise.toLowerCase() === ex.exercise.toLowerCase() &&
                 (parseInt(l.reps) || 0) > 0
-            );
+            ); 
             doneSetsForEx = new Set(exLogs.map(l => l.setNumber)).size;
           }
 
@@ -1231,10 +1545,11 @@
             .map(p => p.exercise.toLowerCase())
         );
 
-        const existingOtherLogs = athleteLogs.filter(
+    const existingOtherLogs = athleteLogs.filter(
           l =>
             l.athlete.toLowerCase() === cleanAth.toLowerCase() &&
             (l.weekNum === wNum || l.week === `W${wNum}`) &&
+            (!l.day || l.day === dayName) &&
             dayExNames.has(l.exercise.toLowerCase()) &&
             !justSavedLogs.some(nl => nl.exercise.toLowerCase() === l.exercise.toLowerCase())
         );
@@ -1596,21 +1911,32 @@
             }
           }));
 
-          if (isCoachUser) {
+      if (isCoachUser) {
             unsubs.push(
-              db.collection('archived_protocols').onSnapshot(
+              db.collection('athlete_videos').orderBy('uploadedAt', 'desc').onSnapshot(
                 snapshot => {
-                  const cloudDocs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                  const vids = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                  setAthleteVideos(vids);
+                },
+                err => {
+                  console.warn("Errore lettura athlete_videos Firestore:", err.message);
+                }
+              )
+            );
+
+            unsubs.push(
+              db.collection('archived_protocols').orderBy('archivedAt', 'desc').onSnapshot(
+                snapshot => {
+                  const cloudReports = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                   setArchivedProtocols(prev => {
-                    const localOnly = prev.filter(item => String(item.id || '').startsWith('arch_'));
-                    const merged = [...cloudDocs, ...localOnly];
-                    merged.sort((a, b) => (b.archivedAt || 0) - (a.archivedAt || 0));
+                    const localOnly = prev.filter(p => String(p.id).startsWith('arch_'));
+                    const merged = [...cloudReports, ...localOnly];
                     localStorage.setItem('merlinos_archived_protocols', JSON.stringify(merged));
                     return merged;
                   });
                 },
                 err => {
-                  console.warn("Errore lettura archivio Firestore (verifica Rules per archived_protocols):", err.message);
+                  console.warn("Errore lettura archived_protocols Firestore:", err.message);
                 }
               )
             );
@@ -1624,13 +1950,13 @@
       }, []);
 
 
-      useEffect(() => {
+     useEffect(() => {
         const key = currentActiveTarget.toLowerCase().trim();
         const savedForAth = athleteMaxesMap[key];
         if (savedForAth) {
-          setMaxSquat(savedForAth.squat || '140');
-          setMaxBench(savedForAth.bench || '100');
-          setMaxDeadlift(savedForAth.deadlift || '180');
+          setMaxSquat(savedForAth.squat ?? '140');
+          setMaxBench(savedForAth.bench ?? '100');
+          setMaxDeadlift(savedForAth.deadlift ?? '180');
         } else {
           setMaxSquat(localStorage.getItem('gym_max_squat') || '140');
           setMaxBench(localStorage.getItem('gym_max_bench') || '100');
@@ -1794,18 +2120,19 @@
         }
       };
 
-      const handleUpdateAthleteMax = async (liftField, value) => {
+    const handleUpdateAthleteMax = async (liftField, value) => {
         if (liftField === 'squat') setMaxSquat(value);
         if (liftField === 'bench') setMaxBench(value);
         if (liftField === 'deadlift') setMaxDeadlift(value);
 
         const key = currentActiveTarget.toLowerCase().trim();
+        const prevEntry = athleteMaxesMap[key] || { squat: maxSquat, bench: maxBench, deadlift: maxDeadlift };
         const updatedEntry = {
           athlete: currentActiveTarget.trim(),
           athleteEmail: getAthleteTechEmail(currentActiveTarget),
-          squat: liftField === 'squat' ? value : maxSquat,
-          bench: liftField === 'bench' ? value : maxBench,
-          deadlift: liftField === 'deadlift' ? value : maxDeadlift,
+          squat: liftField === 'squat' ? value : (prevEntry.squat ?? maxSquat),
+          bench: liftField === 'bench' ? value : (prevEntry.bench ?? maxBench),
+          deadlift: liftField === 'deadlift' ? value : (prevEntry.deadlift ?? maxDeadlift),
           updatedAt: Date.now()
         };
 
@@ -1821,20 +2148,19 @@
         }
       };
 
-      const handleResetToFullDb = () => {
-        if (confirm("Vuoi ripristinare il Database con i 137 Esercizi integrali da Excel?")) {
-          setExerciseDb(EXCEL_FULL_DATABASE);
-          localStorage.setItem('merlinos_exercise_db', JSON.stringify(EXCEL_FULL_DATABASE));
-          alert("Database ripristinato con successo a 137 esercizi.");
-        }
-      };
-
       const handleUpdateDbExerciseField = async (id, field, value) => {
-        const updated = exerciseDb.map(item => item.id === id ? { ...item, [field]: value } : item);
+        let updatedItem = null;
+        const updated = exerciseDb.map(item => {
+          if (item.id === id) {
+            updatedItem = { ...item, [field]: value };
+            return updatedItem;
+          }
+          return item;
+        });
         setExerciseDb(updated);
         localStorage.setItem('merlinos_exercise_db', JSON.stringify(updated));
-        if (db) {
-          await db.collection('exercise_db').doc(id).update({ [field]: value });
+        if (db && updatedItem) {
+          await db.collection('exercise_db').doc(id).set(updatedItem, { merge: true });
         }
       };
 
@@ -2115,7 +2441,6 @@
           alert("Password attuale Coach non corretta.");
         }
       };
-
       const handleDeleteAthlete = async (athleteToDelete, e) => {
         e.stopPropagation();
         if (confirm(`Eliminare definitivamente l'atleta "${athleteToDelete}"?`)) {
@@ -2126,12 +2451,18 @@
           });
           if (db) {
             const docId = getAthleteDocId(athleteToDelete);
-            await db.collection('athletes').doc(docId).delete();
-            await db.collection('athlete_maxes').doc(docId).delete();
-            const protoDocs = await db.collection('protocols').where('athlete', '==', athleteToDelete).get();
-            protoDocs.forEach(doc => doc.ref.delete());
-            const logDocs = await db.collection('logs').where('athlete', '==', athleteToDelete).get();
-            logDocs.forEach(doc => doc.ref.delete());
+            const techEmail = getAthleteTechEmail(athleteToDelete);
+            await Promise.all([
+              db.collection('athletes').doc(docId).delete(),
+              db.collection('athlete_maxes').doc(docId).delete(),
+              db.collection('athlete_cycles').doc(docId).delete(),
+              db.collection('athlete_bw').doc(docId).delete(),
+              db.collection('athlete_rationales').doc(docId).delete()
+            ]);
+            for (const colName of ['protocols', 'logs', 'completed_days']) {
+              const snap = await db.collection(colName).where('athleteEmail', '==', techEmail).get();
+              snap.forEach(doc => doc.ref.delete());
+            }
           } else {
             setProtocol(prev => prev.filter(p => p.athlete.toLowerCase() !== athleteToDelete.toLowerCase()));
             setAthleteLogs(prev => prev.filter(l => l.athlete.toLowerCase() !== athleteToDelete.toLowerCase()));
@@ -2185,10 +2516,11 @@
             ? { ...item.emomData }
             : null;
 
-          const exLogsW = athleteLogs
+     const exLogsW = athleteLogs
             .filter(l =>
               l.athlete.toLowerCase() === athName.toLowerCase() &&
               (l.weekNum === currentW || l.week === `W${currentW}`) &&
+              (!l.day || l.day === item.day) &&
               l.exercise.toLowerCase() === item.exercise.toLowerCase()
             )
             .sort((a, b) => a.setNumber - b.setNumber);
@@ -2423,7 +2755,9 @@
           return;
         }
 
-        const defaultLabel = `Blocco 4 Settimane (${formatItalianDate(getTodayISO())})`;
+        const athWeeksCount = getAthleteProgramConfig(athName).protocolWeeks || 4;
+        const athWeeksArray = Array.from({ length: athWeeksCount }, (_, i) => i + 1);
+        const defaultLabel = `Blocco ${athWeeksCount} Settimane (${formatItalianDate(getTodayISO())})`;
         const customTitle = prompt(
           `Inserisci un nome/etichetta per il Report Archivio di ${athName}:`,
           defaultLabel
@@ -2450,7 +2784,7 @@
           const itemInProto = athProto.find(p => p.exercise === exName);
           const category = getPowerliftingCategory(exName, itemInProto.dbId);
 
-          const weeksData = [1, 2, 3, 4].map(wNum => {
+          const weeksData = athWeeksArray.map(wNum => {
             const logsForExAndWeek = athLogs.filter(l =>
               l.exercise.toLowerCase() === exName.toLowerCase() &&
               (l.weekNum === wNum || l.week === `W${wNum}`)
@@ -2463,49 +2797,17 @@
           return {
             exercise: exName,
             category,
-            w1: weeksData[0],
-            w2: weeksData[1],
-            w3: weeksData[2],
-            w4: weeksData[3],
-            chartData: [
-              { week: 'W1', e1RM: weeksData[0] },
-              { week: 'W2', e1RM: weeksData[1] },
-              { week: 'W3', e1RM: weeksData[2] },
-              { week: 'W4', e1RM: weeksData[3] }
-            ]
+            w1: weeksData[0] || 0,
+            w2: weeksData[1] || 0,
+            w3: weeksData[2] || 0,
+            w4: weeksData[3] || 0,
+            weeksData,
+            chartData: athWeeksArray.map((wNum, idx) => ({ week: `W${wNum}`, e1RM: weeksData[idx] || 0 }))
           };
         });
 
-        // 3. Calcolo Trend & Analisi Settimanali (W1..W4)
-        const weeklyTrendsSnapshot = [1, 2, 3, 4].map(wNum => {
-          const weekLogs = athLogs.filter(l => l.weekNum === wNum || l.week === `W${wNum}`);
-          if (weekLogs.length === 0) {
-            return { week: `W${wNum}`, tonnage: 0, srpe: 0, percent1RM: 0, monotony: 0, hooper: 0, acwr: 0, setsCount: 0 };
-          }
-
-          const weekTonnage = weekLogs.reduce((sum, l) => sum + (l.tonnage || 0), 0);
-          const weeksRPE = weekLogs.reduce((sum, l) => sum + (l.sRPE || 0), 0);
-          const avgPercent = Math.round(weekLogs.reduce((sum, l) => sum + (l.percent1RM || 0), 0) / weekLogs.length);
-          const lastHooper = weekLogs[weekLogs.length - 1].hooper || 0;
-
-          const sRPEList = weekLogs.map(l => l.sRPE || 0);
-          const mean = weeksRPE / (sRPEList.length || 1);
-          const variance = sRPEList.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / (sRPEList.length || 1);
-          const stdDev = Math.sqrt(variance);
-          const monotony = stdDev > 0 ? parseFloat((mean / stdDev).toFixed(2)) : 1.0;
-          const acwr = parseFloat((mean / 450).toFixed(2));
-
-          return {
-            week: `W${wNum}`,
-            tonnage: weekTonnage,
-            srpe: weeksRPE,
-            percent1RM: avgPercent,
-            monotony,
-            hooper: lastHooper,
-            acwr,
-            setsCount: weekLogs.length
-          };
-        });
+        // 3. Calcolo Trend & Analisi Settimanali (W1..Wn)
+        const weeklyTrendsSnapshot = computeWeeklyTrendsFromLogs(athLogs, athWeeksArray);
 
         // 4. Calcolo Volume Muscolare (Serie e %)
         const muscleVolumeSnapshot = {};
@@ -2597,28 +2899,44 @@
               ? `⚠️ Report di "${athName}" salvato in LOCALSTORAGE su questo browser (su Firebase mancano ancora le Rules per "archived_protocols").`
               : `Protocollo e Report di "${athName}" archiviati localmente!`;
 
-          const shouldResetActive = confirm(
-            `${archiveStatusHeader}\n\n` +
-            `Vuoi SVUOTARE ora le 4 settimane attive (scheda, serie registrate e giorni completati) di ${athName} per iniziare un nuovo mesociclo pulito?\n\n` +
-            `• OK = Svuota scheda attiva di ${athName}\n` +
-            `• Annulla = Mantieni la scheda attiva attuale`
-          );
+      const shouldResetActive = confirm(
+          `${archiveStatusHeader}\n\n` +
+          `Vuoi SVUOTARE ora le ${athWeeksCount} settimane attive (scheda, serie registrate e giorni completati) di ${athName} per iniziare un nuovo mesociclo pulito?\n\n` +
+          `• OK = Svuota scheda attiva di ${athName}\n` +
+          `• Annulla = Mantieni la scheda attiva attuale`
+        );
 
           if (shouldResetActive) {
-            if (db) {
+           if (db) {
               const cleanTarget = athName.trim();
-              const protoSnap = await db.collection('protocols').where('athlete', '==', cleanTarget).get();
-              for (const d of protoSnap.docs) await d.ref.delete();
+              const targetEmail = getAthleteTechEmail(athName);
 
-              const logsSnap = await db.collection('logs').where('athlete', '==', cleanTarget).get();
-              for (const d of logsSnap.docs) await d.ref.delete();
+              for (const colName of ['protocols', 'logs', 'completed_days']) {
+                const byName = await db.collection(colName).where('athlete', '==', cleanTarget).get();
+                for (const d of byName.docs) await d.ref.delete();
 
-              const compSnap = await db.collection('completed_days').where('athlete', '==', cleanTarget).get();
-              for (const d of compSnap.docs) await d.ref.delete();
+                const byEmail = await db.collection(colName).where('athleteEmail', '==', targetEmail).get();
+                for (const d of byEmail.docs) await d.ref.delete();
+              }
             }
 
-            setProtocol(prev => prev.filter(p => p.athlete.toLowerCase().trim() !== athKey));
-            setAthleteLogs(prev => prev.filter(l => l.athlete.toLowerCase().trim() !== athKey));
+            setSubmittedSessionsMap(prev => {
+              const next = { ...prev };
+              Object.keys(next).forEach(k => {
+                if (k.toLowerCase().startsWith(`${athKey}_`)) delete next[k];
+              });
+              localStorage.setItem('merlinos_submitted_sessions', JSON.stringify(next));
+              return next;
+            });
+
+          setSessionTimersMap(prev => {
+              const next = { ...prev };
+              Object.keys(next).forEach(k => {
+                if (k.toLowerCase().startsWith(`${athKey}_`)) delete next[k];
+              });
+              localStorage.setItem('merlinos_session_timers', JSON.stringify(next));
+              return next;
+            });
 
             setCompletedDaysMap(prev => {
               const next = { ...prev };
@@ -2626,15 +2944,6 @@
                 if (k.toLowerCase().startsWith(`${athKey}_`)) delete next[k];
               });
               localStorage.setItem('gym_completed_days', JSON.stringify(next));
-              return next;
-            });
-
-            setSessionTimersMap(prev => {
-              const next = { ...prev };
-              Object.keys(next).forEach(k => {
-                if (k.toLowerCase().startsWith(`${athKey}_`)) delete next[k];
-              });
-              localStorage.setItem('merlinos_session_timers', JSON.stringify(next));
               return next;
             });
           }
@@ -2648,7 +2957,20 @@
           alert(`Errore durante l'archiviazione: ${err.message}`);
         }
       };
-
+const handleResetToFullDb = async () => {
+        if (!confirm("Ripristinare il database predefinito da 137 esercizi? Eventuali esercizi personalizzati aggiunti verranno sovrascritti.")) return;
+        setExerciseDb(EXCEL_FULL_DATABASE);
+        localStorage.setItem('merlinos_exercise_db', JSON.stringify(EXCEL_FULL_DATABASE));
+        if (db) {
+          try {
+            const snap = await db.collection('exercise_db').get();
+            for (const d of snap.docs) await d.ref.delete();
+          } catch (e) {
+            console.warn("Errore reset exercise_db su Firestore:", e);
+          }
+        }
+        alert("Database da 137 esercizi ripristinato con successo!");
+      };
       const handleDeleteArchiveReport = async (reportId) => {
         if (!confirm("Eliminare definitivamente questo report dall'Archivio? L'operazione non è reversibile.")) return;
         try {
@@ -2713,8 +3035,16 @@
       }, [currentWeekProtocol]);
 
       useEffect(() => {
-        if (availableDays.length > 0 && !availableDays.includes(selectedDayTab)) {
-          setSelectedDayTab(availableDays[0]);
+        if (selectedWeekFilter && selectedWeekFilter > activeProtocolWeeks) {
+          setSelectedWeekFilter(null);
+        }
+      }, [selectedAthleteForCoach, activeProtocolWeeks]);
+
+      useEffect(() => {
+        if (availableDays.length > 0) {
+          if (!availableDays.includes(selectedDayTab)) setSelectedDayTab(availableDays[0]);
+        } else if (selectedDayTab !== '') {
+          setSelectedDayTab('');
         }
       }, [availableDays]);
 
@@ -2749,10 +3079,12 @@
       // Avvia il conteggio alla 1ª serie inserita in generale nella seduta e aggiorna la fine ad ogni nuova serie inserita
       const recordSessionSetTimestamp = (dayName, weekNum) => {
         const key = `${currentActiveTarget}_W${weekNum}_${dayName}`;
+        if (completedDaysMap[key]) return; // Seduta già chiusa: non alterare la durata
         const now = Date.now();
-        setSessionTimersMap(prev => {
+       setSessionTimersMap(prev => {
           const existing = prev[key];
-          const startTs = (existing && existing.startTime) ? existing.startTime : now;
+          const isStaleSession = existing?.endTime && (now - existing.endTime > 4 * 60 * 60 * 1000);
+          const startTs = (!isStaleSession && existing && existing.startTime) ? existing.startTime : now;
           const updated = {
             ...prev,
             [key]: { startTime: startTs, endTime: now }
@@ -2815,6 +3147,14 @@
       };
 
       const handleSelectExerciseForAthlete = async (item) => {
+        if (selectedExId && selectedExId !== item.id && areAllSetsCompiled(setsData)) {
+          const prevExObj = currentWeekProtocol.find(p => p.id === selectedExId);
+          const currentSig = buildSetsSignature(selectedExId, setsData, athleteNotes, athleteVideoUrl);
+          if (prevExObj && currentSig !== lastSavedSignatureRef.current) {
+            await handleSaveAllSets(prevExObj, { isAuto: true });
+          }
+        }
+
         // Se l'atleta sta chiudendo l'esercizio e tutte le serie sono compilate ma non ancora salvate, forza il salvataggio immediato
         if (selectedExId === item.id) {
           if (areAllSetsCompiled(setsData)) {
@@ -2835,10 +3175,11 @@
         setSelectedExId(item.id);
         setAutoSaveStatus('idle');
 
-        const existingLogs = athleteLogs
+       const existingLogs = athleteLogs
           .filter(l =>
             l.athlete.toLowerCase() === currentActiveTarget.toLowerCase() &&
             (l.week === `W${item.weekNum || 1}` || l.weekNum === (item.weekNum || 1)) &&
+            (!l.day || l.day === item.day) &&
             l.exercise.toLowerCase() === item.exercise.toLowerCase()
           )
           .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
@@ -2918,9 +3259,9 @@
           return;
         }
 
-        // Evita scritture concorrenti su Firestore mentre l'atleta digita velocemente
+      // Evita scritture concorrenti su Firestore mentre l'atleta digita velocemente
         if (isSavingSetsRef.current) {
-          queuedAutoSaveRef.current = true;
+          queuedAutoSaveRef.current = exObj;
           return;
         }
 
@@ -2959,19 +3300,6 @@
           const hooperTotal = parseInt(sleepScore) + parseInt(stressScore) + parseInt(fatigueScore) + parseInt(domsScore);
           const newLogs = [];
           const pwCat = getPowerliftingCategory(exObj.exercise, exObj.dbId);
-
-          if (db) {
-            const oldLogsToRemove = athleteLogs.filter(l =>
-              l.athlete.toLowerCase() === targetAthleteClean.toLowerCase() &&
-              l.exercise.toLowerCase() === exObj.exercise.toLowerCase() &&
-              (l.week === `W${targetWeekNum}` || l.weekNum === targetWeekNum)
-            );
-            for (const oldLog of oldLogsToRemove) {
-              if (oldLog.id) {
-                await db.collection('logs').doc(oldLog.id).delete();
-              }
-            }
-          }
 
           for (let i = 0; i < setsData.length; i++) {
             const s = setsData[i];
@@ -3015,49 +3343,82 @@
               timestamp: now
             };
 
-            if (db) {
-              await db.collection('logs').add(logItem);
-            } else {
-              newLogs.push({ id: now.toString() + '_' + s.setNumber, ...logItem });
-            }
+            newLogs.push(logItem);
           }
 
-          if (startTs) {
-            const dayExNames = new Set(dayExercises.map(d => d.exercise.toLowerCase()));
-            const sameSessionLogs = athleteLogs.filter(l =>
+          const dayExNames = new Set(dayExercises.map(p => p.exercise.toLowerCase()));
+          const sameSessionLogs = athleteLogs.filter(l =>
+            l.athlete.toLowerCase() === targetAthleteClean.toLowerCase() &&
+            (l.week === `W${targetWeekNum}` || l.weekNum === targetWeekNum) &&
+            dayExNames.has(l.exercise.toLowerCase()) &&
+            l.exercise.toLowerCase() !== exObj.exercise.toLowerCase()
+          );
+
+       if (db) {
+            const oldLogsToRemove = athleteLogs.filter(l =>
               l.athlete.toLowerCase() === targetAthleteClean.toLowerCase() &&
-              (l.week === `W${targetWeekNum}` || l.weekNum === targetWeekNum) &&
-              dayExNames.has(l.exercise.toLowerCase()) &&
-              l.exercise.toLowerCase() !== exObj.exercise.toLowerCase()
+              l.exercise.toLowerCase() === exObj.exercise.toLowerCase() &&
+              (!l.day || l.day === exObj.day) &&
+              (l.week === `W${targetWeekNum}` || l.weekNum === targetWeekNum)
             );
 
-            if (db) {
-              for (const prevLog of sameSessionLogs) {
-                if (prevLog.id) {
-                  const prevRpe = parseFloat(prevLog.actualRpe || prevLog.rpe) || 8;
-                  await db.collection('logs').doc(prevLog.id).update({
+            const safeAthId = getAthleteDocId(targetAthleteClean);
+            const safeDayId = getAthleteDocId(exObj.day);
+            const safeExId = getAthleteDocId(exObj.exercise);
+            const batch = db.batch();
+
+            oldLogsToRemove.forEach(oldDoc => {
+              const expectedPrefix = `${safeAthId}_w${targetWeekNum}_${safeDayId}_${safeExId}_set`;
+              if (oldDoc.id && !oldDoc.id.startsWith(expectedPrefix)) {
+                batch.delete(db.collection('logs').doc(oldDoc.id));
+              }
+            });
+
+            newLogs.forEach(itemLog => {
+              const detId = `${safeAthId}_w${targetWeekNum}_${safeDayId}_${safeExId}_set${itemLog.setNumber}`;
+              batch.set(db.collection('logs').doc(detId), itemLog, { merge: true });
+            });
+
+            sameSessionLogs.forEach(prevLog => {
+              if (prevLog.id) {
+                const prevRpe = parseFloat(prevLog.actualRpe || prevLog.rpe) || 8;
+                batch.update(db.collection('logs').doc(prevLog.id), {
+                  sRPE: prevRpe * durationNum,
+                  sessionDurationMinutes: durationNum,
+                  sessionNotes: sanitizeText(durationNotes, 500),
+                  trainingDate: trainingDate || getTodayISO()
+                });
+              }
+            });
+
+            await batch.commit();
+          } else {
+           setAthleteLogs(prev => {
+              const filtered = prev.filter(l => !(
+                l.athlete.toLowerCase() === targetAthleteClean.toLowerCase() &&
+                l.exercise.toLowerCase() === exObj.exercise.toLowerCase() &&
+                (!l.day || l.day === exObj.day) &&
+                (l.week === `W${targetWeekNum}` || l.weekNum === targetWeekNum)
+              ));
+              const updatedPrev = filtered.map(l => {
+                if (
+                  l.athlete.toLowerCase() === targetAthleteClean.toLowerCase() &&
+                  (l.week === `W${targetWeekNum}` || l.weekNum === targetWeekNum) &&
+                  dayExNames.has(l.exercise.toLowerCase())
+                ) {
+                  const prevRpe = parseFloat(l.actualRpe || l.rpe) || 8;
+                  return {
+                    ...l,
                     sRPE: prevRpe * durationNum,
                     sessionDurationMinutes: durationNum,
-                    sessionNotes: durationNotes,
+                    sessionNotes: sanitizeText(durationNotes, 500),
                     trainingDate: trainingDate || getTodayISO()
-                  });
+                  };
                 }
-              }
-            } else {
-              setAthleteLogs(prev => {
-                const filtered = prev.filter(l => !(l.athlete.toLowerCase() === targetAthleteClean.toLowerCase() && l.exercise.toLowerCase() === exObj.exercise.toLowerCase() && (l.week === `W${targetWeekNum}` || l.weekNum === targetWeekNum)));
-                const updatedPrev = filtered.map(l => {
-                  if (l.athlete.toLowerCase() === targetAthleteClean.toLowerCase() && (l.week === `W${targetWeekNum}` || l.weekNum === targetWeekNum) && dayExNames.has(l.exercise.toLowerCase())) {
-                    const prevRpe = parseFloat(l.actualRpe || l.rpe) || 8;
-                    return { ...l, sRPE: prevRpe * durationNum, sessionDurationMinutes: durationNum, sessionNotes: durationNotes, trainingDate: trainingDate || getTodayISO() };
-                  }
-                  return l;
-                });
-                return [...updatedPrev, ...newLogs];
+                return l;
               });
-            }
-          } else if (!db) {
-            setAthleteLogs(prev => [...prev.filter(l => !(l.athlete.toLowerCase() === targetAthleteClean.toLowerCase() && l.exercise.toLowerCase() === exObj.exercise.toLowerCase() && (l.week === `W${targetWeekNum}` || l.weekNum === targetWeekNum))), ...newLogs]);
+              return [...updatedPrev, ...newLogs];
+            });
           }
 
           lastSavedSignatureRef.current = signature;
@@ -3099,14 +3460,16 @@
               justSavedLogs: builtLogsForCheck
             });
           }
-        } catch (err) {
+   } catch (err) {
           console.error('Errore salvataggio automatico serie:', err);
           setAutoSaveStatus('error');
         } finally {
           isSavingSetsRef.current = false;
-          if (queuedAutoSaveRef.current) {
+          const queuedEx = queuedAutoSaveRef.current;
+          if (queuedEx) {
             queuedAutoSaveRef.current = false;
-            handleSaveAllSets(exObj, { isAuto: true });
+            setAutoSaveStatus('pending');
+            setTimeout(() => handleSaveAllSets(queuedEx, { isAuto: true }), 50);
           }
         }
       };
@@ -3133,6 +3496,65 @@
 
         return () => clearTimeout(timerId);
       }, [selectedExId, setsData, athleteNotes, athleteVideoUrl, currentWeekProtocol]);
+
+     // Carica note e data seduta esistenti quando l'atleta cambia giorno o settimana
+      useEffect(() => {
+        if (!isLoggedInAthlete || !selectedDayTab) return;
+        const targetAthleteClean = currentActiveTarget.trim();
+        const dayExNames = new Set(
+          currentWeekProtocol.filter(p => p.day === selectedDayTab).map(p => p.exercise.toLowerCase())
+        );
+        const existingDayLogs = athleteLogs.filter(l =>
+          l.athlete.toLowerCase() === targetAthleteClean.toLowerCase() &&
+          (l.week === `W${activeDisplayWeek}` || l.weekNum === activeDisplayWeek) &&
+          (!l.day || l.day === selectedDayTab) &&
+          dayExNames.has(l.exercise.toLowerCase())
+        );
+        const savedNoteLog = existingDayLogs.find(l => l.sessionNotes);
+        const savedDateLog = existingDayLogs.find(l => l.trainingDate);
+        setDurationNotes(savedNoteLog ? savedNoteLog.sessionNotes : '');
+        if (savedDateLog && savedDateLog.trainingDate) {
+          setTrainingDate(savedDateLog.trainingDate);
+        }
+      }, [selectedDayTab, activeDisplayWeek, isLoggedInAthlete]);
+
+      // Sincronizzazione automatica di durationNotes e trainingDate sui log della giornata
+      useEffect(() => {
+        if (!isLoggedInAthlete || !selectedDayTab) return;
+        const timerId = setTimeout(async () => {
+          const targetAthleteClean = currentActiveTarget.trim();
+          const dayExNames = new Set(
+            currentWeekProtocol.filter(p => p.day === selectedDayTab).map(p => p.exercise.toLowerCase())
+          );
+          const logsToPatch = athleteLogs.filter(l =>
+            l.athlete.toLowerCase() === targetAthleteClean.toLowerCase() &&
+            (l.week === `W${activeDisplayWeek}` || l.weekNum === activeDisplayWeek) &&
+            (!l.day || l.day === selectedDayTab) &&
+            dayExNames.has(l.exercise.toLowerCase())
+          );
+          if (logsToPatch.length === 0) return;
+
+          if (db) {
+            const batch = db.batch();
+            logsToPatch.forEach(l => {
+              if (l.id) {
+                batch.update(db.collection('logs').doc(l.id), {
+                  sessionNotes: sanitizeText(durationNotes, 500),
+                  trainingDate: trainingDate || getTodayISO()
+                });
+              }
+            });
+            await batch.commit();
+          } else {
+            setAthleteLogs(prev => prev.map(l =>
+              logsToPatch.some(p => p.id === l.id)
+                ? { ...l, sessionNotes: sanitizeText(durationNotes, 500), trainingDate: trainingDate || getTodayISO() }
+                : l
+            ));
+          }
+        }, 700);
+        return () => clearTimeout(timerId);
+      }, [durationNotes, trainingDate]);
 
       const handleDeleteSingleLog = async (logId) => {
         if (!confirm("Vuoi eliminare questa singola registrazione duplicata/errata?")) return;
@@ -3264,63 +3686,7 @@
       }, [activeAthleteLogs, activeAthleteProtocol]);
 
       const dynamicWeeklyData = useMemo(() => {
-        const rawWeeks = protocolWeeksArray.map(wNum => {
-          const weekLogs = activeAthleteLogs.filter(l => l.weekNum === wNum || l.week === `W${wNum}`);
-          if (weekLogs.length === 0) {
-            return { week: `W${wNum}`, weekNum: wNum, tonnage: 0, srpe: 0, percent1RM: 0, monotony: 0, hooper: 0, acwr: 0 };
-          }
-
-          const weekTonnage = weekLogs.reduce((sum, l) => sum + (l.tonnage || 0), 0);
-          const avgPercent = Math.round(weekLogs.reduce((sum, l) => sum + (l.percent1RM || 0), 0) / weekLogs.length);
-          const lastHooper = weekLogs[weekLogs.length - 1].hooper || 0;
-
-          // Raggruppa per singola seduta (giorno) per calcolare il vero sRPE giornaliero
-          const sessionsMap = {};
-          weekLogs.forEach(l => {
-            const sKey = l.trainingDate || l.day || 'Seduta';
-            if (!sessionsMap[sKey]) sessionsMap[sKey] = { rpes: [], duration: l.sessionDurationMinutes || 60 };
-            sessionsMap[sKey].rpes.push(parseFloat(l.actualRpe || l.rpe) || 0);
-            if (l.sessionDurationMinutes) sessionsMap[sKey].duration = l.sessionDurationMinutes;
-          });
-
-          const dailyLoads = Object.values(sessionsMap).map(s => {
-            const avgSessionRpe = s.rpes.reduce((a, b) => a + b, 0) / (s.rpes.length || 1);
-            return Math.round(avgSessionRpe * s.duration);
-          });
-
-          const weeksRPE = dailyLoads.reduce((a, b) => a + b, 0);
-
-          // Vettore 7 giorni (inserisce 0 nei giorni di riposo fino a 7)
-          const sevenDaysLoads = [...dailyLoads];
-          while (sevenDaysLoads.length < 7) sevenDaysLoads.push(0);
-          const slice7 = sevenDaysLoads.slice(0, 7);
-
-          const mean7 = slice7.reduce((a, b) => a + b, 0) / 7;
-          const variance7 = slice7.reduce((a, b) => a + Math.pow(b - mean7, 2), 0) / 7;
-          const stdDev7 = Math.sqrt(variance7);
-          const monotony = stdDev7 > 0 ? parseFloat((mean7 / stdDev7).toFixed(2)) : 0;
-
-          return {
-            week: `W${wNum}`,
-            weekNum: wNum,
-            tonnage: weekTonnage,
-            srpe: weeksRPE,
-            percent1RM: avgPercent,
-            monotony,
-            hooper: lastHooper,
-            acwr: 0
-          };
-        });
-
-        // Calcolo ACWR (Carico acuto settimana corrente / Media settimane attive fino a 4)
-        return rawWeeks.map((curr, idx) => {
-          if (curr.srpe === 0) return curr;
-          const windowStart = Math.max(0, idx - 3);
-          const activeWindow = rawWeeks.slice(windowStart, idx + 1).filter(w => w.srpe > 0);
-          const chronicMean = activeWindow.reduce((sum, w) => sum + w.srpe, 0) / (activeWindow.length || 1);
-          const acwr = chronicMean > 0 ? parseFloat((curr.srpe / chronicMean).toFixed(2)) : 1.0;
-          return { ...curr, acwr };
-        });
+        return computeWeeklyTrendsFromLogs(activeAthleteLogs, protocolWeeksArray);
       }, [activeAthleteLogs, protocolWeeksArray]);
 
       const addExerciseToProtocol = async () => {
@@ -3357,8 +3723,7 @@
           localStorage.setItem('merlinos_exercise_db', JSON.stringify(newDbState));
           return newDbState;
         });
-
-        let detailedSets = null;
+   let detailedSets = null;
         let emomData = null;
 
         if (newSetTypeTag === 'Standard') {
@@ -3584,7 +3949,6 @@
           )}
 
 
-
           {isCoachPwModalOpen && (
             <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
               <div className="bg-slate-900 border border-purple-500/40 p-6 rounded-3xl max-w-md w-full space-y-5 shadow-2xl">
@@ -3619,7 +3983,7 @@
                     <input
                       type="text"
                       required
-                      minLength={4}
+                      minLength={6}
                       value={coachVoluntaryNewPw}
                       onChange={(e) => setCoachVoluntaryNewPw(e.target.value)}
                       placeholder="Nuova password personale Coach..."
@@ -3632,7 +3996,7 @@
                     <input
                       type="text"
                       required
-                      minLength={4}
+                      minLength={6}
                       value={coachVoluntaryConfirmPw}
                       onChange={(e) => setCoachVoluntaryConfirmPw(e.target.value)}
                       placeholder="Conferma nuova password Coach..."
@@ -3701,7 +4065,7 @@
                     <input
                       type="text"
                       required
-                      minLength={4}
+                      minLength={6}
                       value={athVoluntaryNewPw}
                       onChange={(e) => setAthVoluntaryNewPw(e.target.value)}
                       placeholder="Nuova password personale..."
@@ -3714,7 +4078,7 @@
                     <input
                       type="text"
                       required
-                      minLength={4}
+                      minLength={6}
                       value={athVoluntaryConfirmPw}
                       onChange={(e) => setAthVoluntaryConfirmPw(e.target.value)}
                       placeholder="Conferma nuova password..."
@@ -3777,7 +4141,7 @@
                         {daysInWeek.map(dayName => {
                           const isDayDone = completedDaysMap[`${athName}_W${wNum}_${dayName}`] === true;
                           const dayProto = weekProto.filter(p => p.day === dayName);
-                          const dayLogs = weekLogs.filter(l => dayProto.some(dp => dp.exercise.toLowerCase() === l.exercise.toLowerCase()));
+                          const dayLogs = weekLogs.filter(l => (!l.day || l.day === dayName) && dayProto.some(dp => dp.exercise.toLowerCase() === l.exercise.toLowerCase()));
                           const sampleLogWithNotes = dayLogs.find(l => l.sessionNotes || l.sessionDurationMinutes);
 
                           return (
@@ -3817,12 +4181,11 @@
                               <div className="space-y-3">
                                 {dayProto.map(item => {
                                   const exLogs = weekLogs
-                                    .filter(l => l.exercise.toLowerCase() === item.exercise.toLowerCase())
+                                    .filter(l => (!l.day || l.day === dayName) && l.exercise.toLowerCase() === item.exercise.toLowerCase())
                                     .sort((a, b) => (a.setNumber - b.setNumber) || ((b.timestamp || 0) - (a.timestamp || 0)));
                                   const hasLogs = exLogs.length > 0;
                                   const hasDuplicates = new Set(exLogs.map(l => l.setNumber)).size < exLogs.length;
                                   const pwCat = getPowerliftingCategory(item.exercise, item.dbId);
-
                                   return (
                                     <div key={item.id} className="bg-slate-900/80 border border-slate-800 rounded-xl p-4 space-y-3">
                                       <div className="flex items-center justify-between">
@@ -4310,9 +4673,9 @@
               </div>
             )}
 
-            {role === 'coach' && (
+      {role === 'coach' && (
               <div className="space-y-6">
-                {!selectedAthleteForCoach && coachSubTab !== 'database' && coachSubTab !== 'archive' ? (
+                {!selectedAthleteForCoach && coachSubTab !== 'database' && coachSubTab !== 'archive' && coachSubTab !== 'videos' ? (
                   <div className="bg-slate-900 border border-purple-500/30 rounded-2xl p-6 space-y-6 shadow-xl">
                     <div className="border-b border-slate-800 pb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                       <div>
@@ -4525,13 +4888,13 @@
                                   r => r.athlete.toLowerCase().trim() === ath.toLowerCase().trim()
                                 ).length;
                                 return (
-                                  <div className="pt-2 border-t border-slate-900/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div className="pt-2 border-t border-slate-900/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                                     <button
                                       type="button"
                                       onClick={() => handleArchiveAthleteProtocol(ath)}
-                                      className="flex-1 py-2.5 px-4 rounded-xl bg-gradient-to-r from-indigo-600/30 via-purple-600/30 to-cyan-600/30 hover:from-indigo-600/50 hover:to-cyan-600/50 border border-indigo-400/40 text-indigo-200 hover:text-white text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 shadow-md"
+                                      className="flex-1 py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-indigo-600/25 border border-indigo-500/40 text-indigo-300 hover:text-white text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2"
                                     >
-                                      <span>📦 Archivia Protocollo (4 Settimane & Report)</span>
+                                      <span>📦 Archivia Protocollo</span>
                                     </button>
 
                                     {athArchivedCount > 0 && (
@@ -4562,7 +4925,7 @@
                   <div className="space-y-6">
                     <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-lg">
                       <div className="flex items-center gap-3">
-                        <button onClick={() => { setSelectedAthleteForCoach(null); setSelectedArchiveReport(null); if(coachSubTab === 'database' || coachSubTab === 'archive') setCoachSubTab('programming'); }} className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold">
+                       <button onClick={() => { setSelectedAthleteForCoach(null); setSelectedArchiveReport(null); if(coachSubTab === 'database' || coachSubTab === 'archive' || coachSubTab === 'videos') setCoachSubTab('programming'); }} className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold">
                           Torna alla Lista
                         </button>
                         <div>
@@ -4669,7 +5032,7 @@
                             <span>♀ Ciclo</span>
                           </button>
                         )}
-                        <button
+                       <button
                           onClick={() => {
                             setArchiveAthleteFilter(selectedAthleteForCoach || 'ALL');
                             setSelectedArchiveReport(null);
@@ -4688,6 +5051,26 @@
                               : archivedProtocols.length}
                           </span>
                         </button>
+
+                        <button
+                          onClick={() => {
+                            setVideoArchiveAthleteFilter(selectedAthleteForCoach || 'ALL');
+                            setCoachSubTab('videos');
+                          }}
+                          className={`px-4 py-2 rounded-lg text-xs font-black transition-all whitespace-nowrap flex items-center gap-1.5 ${
+                            coachSubTab === 'videos'
+                              ? 'bg-cyan-500 text-black shadow-md'
+                              : 'text-cyan-300 hover:text-white bg-cyan-500/10 border border-cyan-500/30'
+                          }`}
+                        >
+                          <span>🎥 Video</span>
+                          <span className="px-1.5 py-0.5 rounded bg-black/30 text-[10px]">
+                            {selectedAthleteForCoach
+                              ? athleteVideos.filter(v => (v.athlete || '').toLowerCase().trim() === selectedAthleteForCoach.toLowerCase().trim()).length
+                              : athleteVideos.length}
+                          </span>
+                        </button>
+
                       </div>
                     </div>
 
@@ -5309,79 +5692,6 @@
                             </div>
                           </div>
 
-                    {/* Riquadro Compatto Peso Corporeo Mattutino (Con spunta di attivazione/disattivazione) */}
-                    {(() => {
-                      const athBw = getAthleteBwData(currentActiveTarget);
-                      const existingWeightForDate = (athBw.weights && athBw.weights[bwInputDate]) || '';
-                      return (
-                        <div className="bg-slate-950/90 border border-emerald-500/30 rounded-xl px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                          <label className="flex items-center gap-2.5 cursor-pointer select-none">
-                            <input
-                              type="checkbox"
-                              checked={bwTrackEnabled}
-                              onChange={(e) => {
-                                setBwTrackEnabled(e.target.checked);
-                                localStorage.setItem('merlinos_bw_track_enabled', e.target.checked ? 'true' : 'false');
-                              }}
-                              className="w-4 h-4 accent-emerald-500 rounded cursor-pointer"
-                            />
-                            <div>
-                              <span className="text-xs font-black text-emerald-400 uppercase tracking-wider block">
-                                Monitoraggio Peso Corporeo (BW)
-                              </span>
-                              <span className="text-[10px] text-slate-400">
-                                {bwTrackEnabled
-                                  ? 'Inserisci il peso mattutino a digiuno (sincronizzato con il Coach).'
-                                  : 'Attiva la spunta se vuoi registrare il tuo peso corporeo oggi.'}
-                              </span>
-                            </div>
-                          </label>
-
-                          {bwTrackEnabled && (
-                            <div className="flex flex-wrap items-center gap-2">
-                              <input
-                                type="date"
-                                value={bwInputDate}
-                                onChange={(e) => {
-                                  setBwInputDate(e.target.value);
-                                  const wVal = (athBw.weights && athBw.weights[e.target.value]) || '';
-                                  setBwInputWeight(wVal);
-                                }}
-                                className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-bold focus:border-emerald-400 focus:outline-none"
-                              />
-                              <div className="flex items-center bg-slate-900 border border-emerald-500/40 rounded-lg px-2.5 py-1">
-                                <input
-                                  type="number"
-                                  step="0.1"
-                                  value={bwInputWeight !== '' ? bwInputWeight : existingWeightForDate}
-                                  onChange={(e) => setBwInputWeight(e.target.value)}
-                                  placeholder="es. 76.4"
-                                  className="w-16 bg-transparent text-xs text-emerald-300 font-black font-mono text-right focus:outline-none"
-                                />
-                                <span className="text-[10px] text-slate-400 font-bold ml-1">kg</span>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  const valToSave = bwInputWeight !== '' ? bwInputWeight : existingWeightForDate;
-                                  if (!valToSave || isNaN(parseFloat(valToSave))) {
-                                    alert('Inserisci un valore di peso valido (es. 75.5).');
-                                    return;
-                                  }
-                                  await saveAthleteBodyWeight(currentActiveTarget, bwInputDate, valToSave);
-                                  setBwInputWeight('');
-                                  alert(`Peso (${parseFloat(valToSave).toFixed(1)} kg) registrato per il ${formatItalianDate(bwInputDate)}!`);
-                                }}
-                                className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-black transition-all"
-                              >
-                                Salva Peso
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })()}
-
                           {availableDays.length === 0 ? (
                             <div className="text-center py-8 text-slate-500 text-xs">Nessun esercizio in scheda per questa settimana.</div>
                           ) : (
@@ -5515,6 +5825,10 @@
                           ];
 
                           const handleRunScientificAudit = async () => {
+                            if (!SCIENTIFIC_AUDIT_URL) {
+                              alert("Endpoint Audit AI non ancora configurato: inserisci l'URL della tua funzione serverless nella costante SCIENTIFIC_AUDIT_URL nel codice.");
+                              return;
+                            }
                             setIsGeneratingAudit(true);
                             try {
                               const res = await fetch(SCIENTIFIC_AUDIT_URL, {
@@ -5701,70 +6015,73 @@
                           />
                         </div>
 
-                        <div className="overflow-x-auto rounded-xl border border-slate-800">
+                      <div className="overflow-x-auto rounded-xl border border-slate-800 max-h-[65vh]">
                           <table className="w-full text-left text-xs text-slate-300">
-                            <thead className="bg-slate-950 text-slate-400 font-black uppercase text-[10px] tracking-wider border-b border-slate-800">
+                            <thead className="bg-slate-950 text-slate-400 font-black uppercase text-[10px] tracking-wider border-b border-slate-800 sticky top-0 z-10">
                               <tr>
-                                <th className="p-3">#</th>
-                                <th className="p-3">Nome Esercizio</th>
+                                <th className="p-3">Esercizio</th>
                                 <th className="p-3">Primario (100%)</th>
                                 <th className="p-3">Secondario (60%)</th>
                                 <th className="p-3">Terziario (30%)</th>
-                                <th className="p-3">URL / Link Spiegazione YouTube</th>
+                                <th className="p-3">Link Video YouTube</th>
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-800/60 bg-slate-900/50">
-                              {filteredExerciseDbList.map((item, idx) => (
-                                <tr key={item.id} className="hover:bg-slate-800/40 transition-all">
-                                  <td className="p-3 font-mono text-[10px] text-slate-500">{idx + 1}</td>
-                                  <td className="p-3 font-black text-white uppercase text-xs whitespace-nowrap flex items-center gap-2">
-                                    <span>{item.name}</span>
-                                    {getPowerliftingCategory(item.name, item.id) && (
-                                      <span className="bg-red-500/20 border border-red-500/40 text-red-400 text-[8px] font-black px-1.5 py-0.5 rounded">
-                                        PL
-                                      </span>
-                                    )}
-                                  </td>
-                                  <td className="p-3">
-                                    <select
-                                      value={item.primary}
-                                      onChange={(e) => handleUpdateDbExerciseField(item.id, 'primary', e.target.value)}
-                                      className="bg-slate-950 border border-slate-800 text-cyan-400 font-bold rounded-lg p-1 text-[11px]"
-                                    >
-                                      {DETAILED_MUSCLE_GROUPS.map(m => <option key={m} value={m}>{m}</option>)}
-                                    </select>
-                                  </td>
-                                  <td className="p-3">
-                                    <select
-                                      value={item.secondary || 'Nessuno'}
-                                      onChange={(e) => handleUpdateDbExerciseField(item.id, 'secondary', e.target.value)}
-                                      className="bg-slate-950 border border-slate-800 text-slate-300 rounded-lg p-1 text-[11px]"
-                                    >
-                                      <option value="Nessuno">Nessuno</option>
-                                      {DETAILED_MUSCLE_GROUPS.map(m => <option key={m} value={m}>{m}</option>)}
-                                    </select>
-                                  </td>
-                                  <td className="p-3">
-                                    <select
-                                      value={item.tertiary || 'Nessuno'}
-                                      onChange={(e) => handleUpdateDbExerciseField(item.id, 'tertiary', e.target.value)}
-                                      className="bg-slate-950 border border-slate-800 text-slate-400 rounded-lg p-1 text-[11px]"
-                                    >
-                                      <option value="Nessuno">Nessuno</option>
-                                      {DETAILED_MUSCLE_GROUPS.map(m => <option key={m} value={m}>{m}</option>)}
-                                    </select>
-                                  </td>
-                                  <td className="p-3">
-                                    <input
-                                      type="url"
-                                      value={item.youtubeUrl || ''}
-                                      onChange={(e) => handleUpdateDbExerciseField(item.id, 'youtubeUrl', e.target.value)}
-                                      placeholder="Incolla Link YouTube..."
-                                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 text-[11px] text-red-400 font-mono"
-                                    />
-                                  </td>
-                                </tr>
-                              ))}
+                              {filteredExerciseDbList.map((ex) => {
+                                const plType = getPowerliftingCategory(ex.name, ex.id);
+                                return (
+                                  <tr key={ex.id} className="hover:bg-slate-800/40">
+                                    <td className="p-3 font-black text-white">
+                                      <div className="flex items-center gap-2">
+                                        <span>{ex.name}</span>
+                                        {plType && (
+                                          <span className="px-1.5 py-0.5 rounded bg-red-500/20 border border-red-500/40 text-red-400 text-[9px] font-black">
+                                            PL ({plType})
+                                          </span>
+                                        )}
+                                      </div>
+                                    </td>
+                                    <td className="p-2">
+                                      <select
+                                        value={ex.primary || DETAILED_MUSCLE_GROUPS[0]}
+                                        onChange={(e) => handleUpdateDbExerciseField(ex.id, 'primary', e.target.value)}
+                                        className="bg-slate-950 border border-slate-800 rounded-lg p-1.5 text-xs text-cyan-300 font-bold"
+                                      >
+                                        {DETAILED_MUSCLE_GROUPS.map(m => <option key={m} value={m}>{m}</option>)}
+                                      </select>
+                                    </td>
+                                    <td className="p-2">
+                                      <select
+                                        value={ex.secondary || 'Nessuno'}
+                                        onChange={(e) => handleUpdateDbExerciseField(ex.id, 'secondary', e.target.value)}
+                                        className="bg-slate-950 border border-slate-800 rounded-lg p-1.5 text-xs text-slate-300"
+                                      >
+                                        <option value="Nessuno">Nessuno</option>
+                                        {DETAILED_MUSCLE_GROUPS.map(m => <option key={m} value={m}>{m}</option>)}
+                                      </select>
+                                    </td>
+                                    <td className="p-2">
+                                      <select
+                                        value={ex.tertiary || 'Nessuno'}
+                                        onChange={(e) => handleUpdateDbExerciseField(ex.id, 'tertiary', e.target.value)}
+                                        className="bg-slate-950 border border-slate-800 rounded-lg p-1.5 text-xs text-slate-300"
+                                      >
+                                        <option value="Nessuno">Nessuno</option>
+                                        {DETAILED_MUSCLE_GROUPS.map(m => <option key={m} value={m}>{m}</option>)}
+                                      </select>
+                                    </td>
+                                    <td className="p-2">
+                                      <input
+                                        type="url"
+                                        value={ex.youtubeUrl || ''}
+                                        onChange={(e) => handleUpdateDbExerciseField(ex.id, 'youtubeUrl', e.target.value)}
+                                        placeholder="https://youtube.com/..."
+                                        className="w-full min-w-[180px] bg-slate-950 border border-slate-800 rounded-lg p-1.5 text-xs text-cyan-300 font-mono"
+                                      />
+                                    </td>
+                                  </tr>
+                                );
+                              })}
                             </tbody>
                           </table>
                         </div>
@@ -5821,14 +6138,13 @@
                             <div className="space-y-6">
                               <div className="overflow-x-auto rounded-xl border border-slate-800">
                                 <table className="w-full text-center text-xs text-slate-200">
-                                  <thead className="bg-slate-950 text-slate-400 font-black uppercase text-[10px] tracking-wider border-b border-slate-800">
+                                 <thead className="bg-slate-950 text-slate-400 font-black uppercase text-[10px] tracking-wider border-b border-slate-800">
                                     <tr>
                                       <th className="p-3 text-left">Esercizio (Righe 1-22 PL)</th>
                                       <th className="p-3 text-left">Alzata</th>
-                                      <th className="p-3 text-cyan-400">e1RM Week 1</th>
-                                      <th className="p-3 text-amber-400">e1RM Week 2</th>
-                                      <th className="p-3 text-emerald-400">e1RM Week 3</th>
-                                      <th className="p-3 text-purple-400">e1RM Week 4</th>
+                                      {protocolWeeksArray.map(w => (
+                                        <th key={w} className="p-3 text-cyan-400">e1RM Week {w}</th>
+                                      ))}
                                     </tr>
                                   </thead>
                                   <tbody className="divide-y divide-slate-800/60 bg-slate-900/50">
@@ -5847,10 +6163,14 @@
                                             {row.category}
                                           </span>
                                         </td>
-                                        <td className="p-3 text-cyan-300 font-mono text-sm">{row.w1 > 0 ? `${row.w1} kg` : '-'}</td>
-                                        <td className="p-3 text-amber-300 font-mono text-sm">{row.w2 > 0 ? `${row.w2} kg` : '-'}</td>
-                                        <td className="p-3 text-emerald-300 font-mono text-sm">{row.w3 > 0 ? `${row.w3} kg` : '-'}</td>
-                                        <td className="p-3 text-purple-300 font-mono text-sm">{row.w4 > 0 ? `${row.w4} kg` : '-'}</td>
+                                        {protocolWeeksArray.map((w, idx) => {
+                                          const val = row.weeksData ? row.weeksData[idx] : row[`w${w}`];
+                                          return (
+                                            <td key={w} className="p-3 text-cyan-300 font-mono text-sm">
+                                              {val > 0 ? `${val} kg` : '-'}
+                                            </td>
+                                          );
+                                        })}
                                       </tr>
                                     ))}
                                   </tbody>
@@ -6801,7 +7121,9 @@
                         const repPlTable = rep.powerliftingE1RM || [];
                         const repMuscleVol = rep.muscleVolume || {};
                         const repMaxes = rep.realMaxes || { squat: 0, bench: 0, deadlift: 0, total: 0 };
-
+                        const archiveWeeksList = repTrends.length > 0
+                          ? repTrends.map(t => t.weekNum || parseInt(String(t.week).replace(/\D/g, ''), 10) || 1)
+                          : [1, 2, 3, 4];
                         const weekProto = repProto.filter(p => (p.weekNum || 1) === archiveWeekTab);
                         const weekLogs = repLogs.filter(l => l.weekNum === archiveWeekTab || l.week === `W${archiveWeekTab}`);
                         const daysInSelectedWeek = Array.from(new Set(weekProto.map(p => p.day)));
@@ -6890,22 +7212,24 @@
                                 <p className="text-xs text-slate-500">Nessun esercizio Powerlifting presente in questo mesociclo.</p>
                               ) : (
                                 <div className="space-y-6">
-                                  <div className="overflow-x-auto rounded-xl border border-slate-800">
+                                <div className="overflow-x-auto rounded-xl border border-slate-800">
                                     <table className="w-full text-center text-xs text-slate-200">
                                       <thead className="bg-slate-950 text-slate-400 font-black uppercase text-[10px] tracking-wider border-b border-slate-800">
                                         <tr>
                                           <th className="p-3 text-left">Esercizio PL</th>
                                           <th className="p-3 text-left">Alzata</th>
-                                          <th className="p-3 text-cyan-400">e1RM W1</th>
-                                          <th className="p-3 text-amber-400">e1RM W2</th>
-                                          <th className="p-3 text-emerald-400">e1RM W3</th>
-                                          <th className="p-3 text-purple-400">e1RM W4</th>
+                                          {archiveWeeksList.map(wNum => (
+                                            <th key={wNum} className="p-3 text-cyan-400">e1RM W{wNum}</th>
+                                          ))}
                                           <th className="p-3 text-white">Delta Blocco</th>
                                         </tr>
                                       </thead>
                                       <tbody className="divide-y divide-slate-800/60 bg-slate-900/50">
                                         {repPlTable.map(row => {
-                                          const validVals = [row.w1, row.w2, row.w3, row.w4].filter(v => v > 0);
+                                          const allWeekVals = Array.isArray(row.weeksData) && row.weeksData.length > 0
+                                            ? row.weeksData
+                                            : [row.w1, row.w2, row.w3, row.w4];
+                                          const validVals = allWeekVals.filter(v => v > 0);
                                           const delta = validVals.length >= 2 ? validVals[validVals.length - 1] - validVals[0] : 0;
                                           return (
                                             <tr key={row.exercise} className="font-bold">
@@ -6915,10 +7239,14 @@
                                                   {row.category}
                                                 </span>
                                               </td>
-                                              <td className="p-3 font-mono text-cyan-300">{row.w1 > 0 ? `${row.w1} kg` : '-'}</td>
-                                              <td className="p-3 font-mono text-amber-300">{row.w2 > 0 ? `${row.w2} kg` : '-'}</td>
-                                              <td className="p-3 font-mono text-emerald-300">{row.w3 > 0 ? `${row.w3} kg` : '-'}</td>
-                                              <td className="p-3 font-mono text-purple-300">{row.w4 > 0 ? `${row.w4} kg` : '-'}</td>
+                                              {archiveWeeksList.map((wNum, idx) => {
+                                                const val = allWeekVals[idx] || 0;
+                                                return (
+                                                  <td key={wNum} className="p-3 font-mono text-cyan-300">
+                                                    {val > 0 ? `${val} kg` : '-'}
+                                                  </td>
+                                                );
+                                              })}
                                               <td className={`p-3 font-mono font-black ${delta > 0 ? 'text-emerald-400' : delta < 0 ? 'text-red-400' : 'text-slate-400'}`}>
                                                 {delta > 0 ? `+${delta} kg` : delta < 0 ? `${delta} kg` : '0 kg'}
                                               </td>
@@ -6927,7 +7255,7 @@
                                         })}
                                       </tbody>
                                     </table>
-                                  </div>
+                                  </div> 
 
                                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                                     {repPlTable.map(row => {
@@ -7009,7 +7337,7 @@
                                   3. Dettaglio Scheda & Allenamenti Eseguiti (W1 – W4)
                                 </h3>
                                 <div className="flex items-center gap-1.5 bg-slate-950 p-1.5 rounded-xl border border-slate-800">
-                                  {[1, 2, 3, 4].map(wNum => (
+                                  {archiveWeeksList.map(wNum => (
                                     <button
                                       key={wNum}
                                       type="button"
@@ -7049,9 +7377,10 @@
 
                                         <div className="space-y-2.5">
                                           {dayExs.map(ex => {
-                                            const exLogs = weekLogs
-                                              .filter(l => l.exercise.toLowerCase() === ex.exercise.toLowerCase())
+                                           const exLogs = weekLogs
+                                              .filter(l => (!l.day || l.day === dayName) && l.exercise.toLowerCase() === ex.exercise.toLowerCase())
                                               .sort((a, b) => a.setNumber - b.setNumber);
+
 
                                             return (
                                               <div key={ex.id} className="bg-slate-900/80 border border-slate-800/80 rounded-xl p-3 space-y-1.5">
@@ -7120,8 +7449,8 @@
                             <div className="text-center py-12 bg-slate-950 rounded-2xl border border-slate-800 space-y-2">
                               <p className="text-sm font-black text-slate-300">Nessun protocollo archiviato trovato</p>
                               <p className="text-xs text-slate-500">
-                                Vai nel Database Atleti e clicca su "📦 Archivia Protocollo (4 Settimane & Report)" sotto le 4 settimane di un atleta per salvare qui il suo report completo.
-                              </p>
+                              Vai nel Database Atleti e clicca su "📦 Archivia Protocollo" sotto le settimane di un atleta per salvare qui il suo report completo.
+                            </p>
                             </div>
                           ) : (
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -7180,15 +7509,159 @@
                           )}
                         </div>
                       );
+                 })()}
+
+                    {/* SEZIONE ARCHIVIO VIDEO ATLETI + DOWNLOAD ED ELIMINAZIONE CLOUDINARY */}
+                    {coachSubTab === 'videos' && (() => {
+                      const effectiveAth = selectedAthleteForCoach || videoArchiveAthleteFilter;
+                      const filteredVideos = athleteVideos.filter(v => {
+                        const matchAth = !effectiveAth || effectiveAth === 'ALL'
+                          ? true
+                          : (v.athlete || '').toLowerCase().trim() === effectiveAth.toLowerCase().trim();
+                        const matchWeek = videoArchiveWeekFilter === 'ALL'
+                          ? true
+                          : Number(v.weekNum) === Number(videoArchiveWeekFilter);
+                        return matchAth && matchWeek;
+                      });
+                      const totalBytesAll = athleteVideos.reduce((acc, v) => acc + (Number(v.bytes) || 0), 0);
+                      const totalMBAll = (totalBytesAll / (1024 * 1024)).toFixed(1);
+                      const uniqueVideoAthletes = Array.from(new Set(athleteVideos.map(v => v.athlete).filter(Boolean))).sort();
+
+                      return (
+                        <div className="space-y-6">
+                          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4 shadow-xl">
+                            <div>
+                              <h3 className="text-lg font-black text-white flex items-center gap-2">
+                                <span>🎥 Archivio Video Esecuzioni Atleti</span>
+                              </h3>
+                              <p className="text-xs text-slate-400 mt-1">
+                                Spazio stimato occupato su Cloudinary:{" "}
+                                <span className="text-cyan-400 font-black">{totalMBAll} MB</span>{" "}
+                                ({athleteVideos.length} video totali nel cloud)
+                              </p>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-3">
+                              {!selectedAthleteForCoach && (
+                                <select
+                                  value={videoArchiveAthleteFilter}
+                                  onChange={(e) => setVideoArchiveAthleteFilter(e.target.value)}
+                                  className="bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs font-bold text-white"
+                                >
+                                  <option value="ALL">Tutti gli Atleti ({athleteVideos.length})</option>
+                                  {uniqueVideoAthletes.map(ath => (
+                                    <option key={ath} value={ath}>{ath}</option>
+                                  ))}
+                                </select>
+                              )}
+
+                              <select
+                                value={videoArchiveWeekFilter}
+                                onChange={(e) => setVideoArchiveWeekFilter(e.target.value)}
+                                className="bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs font-bold text-white"
+                              >
+                                <option value="ALL">Tutte le Settimane</option>
+                                {[1, 2, 3, 4, 5, 6, 7, 8].map(w => (
+                                  <option key={w} value={w}>Week {w}</option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+
+                          {filteredVideos.length === 0 ? (
+                            <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-10 text-center text-slate-400 text-sm font-bold">
+                              Nessun video trovato per i filtri selezionati.
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+                              {filteredVideos.map((vid) => {
+                                const sizeMB = ((Number(vid.bytes) || 0) / (1024 * 1024)).toFixed(2);
+                                const isDeleting = deletingVideoId === vid.id;
+
+                                const relatedSets = athleteLogs.filter(l =>
+                                  (l.athlete || '').toLowerCase().trim() === (vid.athlete || '').toLowerCase().trim() &&
+                                  Number(l.weekNum || String(l.week || '').replace('W', '')) === Number(vid.weekNum) &&
+                                  (l.exercise || '').toLowerCase().trim() === (vid.exercise || '').toLowerCase().trim()
+                                );
+
+                                return (
+                                  <div key={vid.id} className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden flex flex-col justify-between shadow-lg">
+                                    <div>
+                                      <div className="p-4 border-b border-slate-800 flex items-start justify-between gap-2">
+                                        <div>
+                                          <span className="px-2 py-0.5 rounded-md bg-cyan-500/15 text-cyan-400 text-[10px] font-black uppercase">
+                                            {vid.athlete} • W{vid.weekNum} {vid.day ? `(${vid.day})` : ''}
+                                          </span>
+                                          <h4 className="text-sm font-black text-white mt-1.5">{vid.exercise}</h4>
+                                          <p className="text-[11px] text-slate-400 mt-0.5">
+                                            Caricato il {vid.uploadedDateISO || 'N/D'} • <span className="text-amber-400 font-bold">{sizeMB} MB</span>
+                                          </p>
+                                        </div>
+                                      </div>
+
+                                      <div className="bg-black">
+                                        <video
+                                          src={sanitizeUrl(vid.secureUrl)}
+                                          controls
+                                          playsInline
+                                          preload="metadata"
+                                          className="w-full max-h-60 object-contain"
+                                        />
+                                      </div>
+
+                                      <div className="p-4 space-y-2">
+                                        {relatedSets.length > 0 && (
+                                          <div className="flex flex-wrap gap-1.5">
+                                            {relatedSets.map((s, idx) => (
+                                              <span key={idx} className="px-2 py-0.5 rounded bg-slate-800 text-[11px] font-bold text-slate-200">
+                                                S{idx + 1}: {s.weight}kg × {s.reps} (RPE {s.actualRpe || s.rpe || '-'})
+                                              </span>
+                                            ))}
+                                          </div>
+                                        )}
+                                        {vid.notesSnapshot && (
+                                          <p className="text-xs text-slate-300 bg-slate-950/80 border border-slate-800 rounded-xl p-2.5 italic">
+                                            "{vid.notesSnapshot}"
+                                          </p>
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    <div className="p-4 pt-0 flex items-center gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleDownloadArchiveVideo(vid)}
+                                        className="flex-1 py-2.5 px-3 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 text-xs font-black transition-all"
+                                      >
+                                        ⬇️ Scarica MP4
+                                      </button>
+                                      <button
+                                        type="button"
+                                        disabled={isDeleting}
+                                        onClick={() => handleDeleteVideoFromCloudAndApp(vid)}
+                                        className="flex-1 py-2.5 px-3 rounded-xl bg-red-500/15 hover:bg-red-500/25 disabled:opacity-50 text-red-300 border border-red-500/30 text-xs font-black transition-all"
+                                      >
+                                        {isDeleting ? 'Eliminazione...' : '🗑️ Elimina Cloud'}
+                                      </button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
                     })()}
 
                   </div>
                 )}
               </div>
             )}
+                   
 
-            {role === 'athlete' && isLoggedInAthlete && (
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6 shadow-xl">
+ 
+
+            {role === 'athlete' && isLoggedInAthlete && (<div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6 shadow-xl">
                 
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800 pb-4 gap-2">
                   <div className="flex items-center gap-3">
@@ -7255,13 +7728,12 @@
 
                           {bwTrackEnabled && (
                             <div className="flex flex-wrap items-center gap-2">
-                              <input
+                             <input
                                 type="date"
                                 value={bwInputDate}
                                 onChange={(e) => {
                                   setBwInputDate(e.target.value);
-                                  const wVal = (athBw.weights && athBw.weights[e.target.value]) || '';
-                                  setBwInputWeight(wVal);
+                                  setBwInputWeight(null);
                                 }}
                                 className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-bold focus:border-emerald-400 focus:outline-none"
                               />
@@ -7269,7 +7741,7 @@
                                 <input
                                   type="number"
                                   step="0.1"
-                                  value={bwInputWeight !== '' ? bwInputWeight : existingWeightForDate}
+                                  value={bwInputWeight !== null ? bwInputWeight : existingWeightForDate}
                                   onChange={(e) => setBwInputWeight(e.target.value)}
                                   placeholder="es. 76.4"
                                   className="w-16 bg-transparent text-xs text-emerald-300 font-black font-mono text-right focus:outline-none"
@@ -7279,13 +7751,13 @@
                               <button
                                 type="button"
                                 onClick={async () => {
-                                  const valToSave = bwInputWeight !== '' ? bwInputWeight : existingWeightForDate;
+                                  const valToSave = bwInputWeight !== null ? bwInputWeight : existingWeightForDate;
                                   if (!valToSave || isNaN(parseFloat(valToSave))) {
                                     alert('Inserisci un valore di peso valido (es. 75.5).');
                                     return;
                                   }
                                   await saveAthleteBodyWeight(currentActiveTarget, bwInputDate, valToSave);
-                                  setBwInputWeight('');
+                                  setBwInputWeight(null);
                                   alert(`Peso (${parseFloat(valToSave).toFixed(1)} kg) registrato per il ${formatItalianDate(bwInputDate)}!`);
                                 }}
                                 className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-black transition-all"
@@ -7384,7 +7856,7 @@
                         .filter(p => p.day === selectedDayTab)
                         .map((item) => {
                           const isSelected = selectedExId === item.id;
-                          const exLogs = athleteLogs.filter(l => l.athlete.toLowerCase() === currentActiveTarget.toLowerCase() && (l.week === `W${activeDisplayWeek}` || l.weekNum === activeDisplayWeek) && l.exercise.toLowerCase() === item.exercise.toLowerCase());
+                          const exLogs = athleteLogs.filter(l => l.athlete.toLowerCase() === currentActiveTarget.toLowerCase() && (l.week === `W${activeDisplayWeek}` || l.weekNum === activeDisplayWeek) && (!l.day || l.day === item.day) && l.exercise.toLowerCase() === item.exercise.toLowerCase());
                           const isDone = exLogs.length > 0;
                           const pwCat = getPowerliftingCategory(item.exercise, item.dbId);
 
@@ -7408,14 +7880,20 @@
                                   </div>
 
                                   <div className="text-xs text-white font-mono space-y-0.5 pt-1">
-                                    {item.detailedSets && item.detailedSets.map((ds, dIdx) => (
-                                      <div key={dIdx} className="flex items-center gap-2 font-bold">
-                                        <span className="w-24 text-slate-400 font-sans">{ds.label}:</span>
-                                        <span className="text-white">1 x {ds.targetReps}</span>
-                                        <span className="text-white">{(ds.targetWeightRange || ds.targetWeight || '').replace(/kg/gi, '').trim()} kg</span>
-                                        {ds.targetRpe && <span className="text-emerald-400">@RPE {ds.targetRpe}</span>}
-                                      </div>
-                                    ))}
+                                  {item.detailedSets && item.detailedSets.map((ds, dsIdx) => (
+                                          <div key={dsIdx} className="flex items-center gap-2 text-[11px]">
+                                            <span className="w-24 text-slate-400 font-sans">{ds.label}:</span>
+                                            <span className="text-white">1 x {ds.targetReps}</span>
+                                            <span className="text-white">{String(ds.targetWeightRange || ds.targetWeight || '').replace(/kg/gi, '').trim()} kg</span>
+                                            {ds.targetRpe && <span className="text-emerald-400">@RPE {ds.targetRpe}</span>}
+                                          </div>
+                                        ))}
+                                        {item.setTypeTag === 'EMOM' && item.emomData && (
+                                          <div className="flex items-center gap-2 text-[11px] text-cyan-300 font-bold">
+                                            <span className="w-24 text-slate-400 font-sans">EMOM:</span>
+                                            <span>{item.emomData.minutes} Minuti ({item.emomData.repsPerMin} reps/min @ {item.emomData.targetWeight} kg {item.emomData.targetRpe ? `@RPE ${item.emomData.targetRpe}` : ''})</span>
+                                          </div>
+                                        )}
                                     {item.setTypeTag === 'EMOM' && item.emomData && (
                                       <div className="flex items-center gap-2 font-bold text-cyan-300">
                                         <span className="w-24 text-slate-400 font-sans">EMOM:</span>
@@ -7820,3 +8298,4 @@
   </script>
 </body>
 </html>
+     
