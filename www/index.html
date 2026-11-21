@@ -1628,8 +1628,11 @@ const handleDeleteVideoFromCloudAndApp = async (videoItem) => {
         }
       };
 
-      const [selectedDayTab, setSelectedDayTab] = useState('');
-      const [draggedExIndex, setDraggedExIndex] = useState(null);
+const [selectedDayTab, setSelectedDayTab] = useState('');
+const [draggedExIndex, setDraggedExIndex] = useState(null);
+const [editingProtocolEx, setEditingProtocolEx] = useState(null);
+const [isSavingEditedEx, setIsSavingEditedEx] = useState(false);
+
 
       const [newDay, setNewDay] = useState('Giorno A');
       const [selectedDbExId, setSelectedDbExId] = useState('');
@@ -3810,11 +3813,268 @@ const handleResetToFullDb = async () => {
         if (confirm("Vuoi cancellare questo esercizio?")) {
           if (db) await db.collection('protocols').doc(id).delete();
           else setProtocol(protocol.filter(p => p.id !== id));
+}
+        };
+// =========================================================================
+// A. SVUOTA SETTIMANE NEL DATABASE ATLETI (ANCHE SE NON COMPLETATE LE 4W)
+// =========================================================================
+const handleClearAthleteWeeks = async (athName, specificWeekNum = null) => {
+  if (!athName) return;
+  const athKey = athName.toLowerCase().trim();
+  const cleanTarget = athName.trim();
+  const targetEmail = getAthleteTechEmail(athName);
+
+  const confirmMsg = specificWeekNum
+    ? `Vuoi svuotare la Settimana ${specificWeekNum} di "${cleanTarget}" (esercizi, serie registrate e giorni completati)?\n\nL'azione non è reversibile.`
+    : `Vuoi svuotare TUTTE le settimane attive di "${cleanTarget}" (esercizi programmati, serie registrate, timer e giorni completati)?\n\nUsa questa funzione per ripartire da zero senza archiviare. L'azione non è reversibile.`;
+
+  if (!confirm(confirmMsg)) return;
+
+  try {
+    if (db) {
+      const collections = ['protocols', 'logs', 'completed_days'];
+      for (const colName of collections) {
+        const byName = await db.collection(colName).where('athlete', '==', cleanTarget).get();
+        for (const docSnap of byName.docs) {
+          const data = docSnap.data();
+          const docWeek = data.weekNum || (data.week ? parseInt(String(data.week).replace(/\D/g, ''), 10) : 1);
+          if (specificWeekNum === null || docWeek === specificWeekNum) {
+            await docSnap.ref.delete();
+          }
         }
+
+        const byEmail = await db.collection(colName).where('athleteEmail', '==', targetEmail).get();
+        for (const docSnap of byEmail.docs) {
+          const data = docSnap.data();
+          const docWeek = data.weekNum || (data.week ? parseInt(String(data.week).replace(/\D/g, ''), 10) : 1);
+          if (specificWeekNum === null || docWeek === specificWeekNum) {
+            await docSnap.ref.delete();
+          }
+        }
+      }
+    }
+
+    setProtocol(prev => {
+      const next = prev.filter(p => {
+        if (p.athlete.toLowerCase().trim() !== athKey) return true;
+        if (specificWeekNum !== null) return (p.weekNum || 1) !== specificWeekNum;
+        return false;
+      });
+      if (!db) localStorage.setItem('gym_protocol', JSON.stringify(next));
+      return next;
+    });
+
+    setAthleteLogs(prev => {
+      const next = prev.filter(l => {
+        if (l.athlete.toLowerCase().trim() !== athKey) return true;
+        const logW = l.weekNum || (l.week ? parseInt(String(l.week).replace(/\D/g, ''), 10) : 1);
+        if (specificWeekNum !== null) return logW !== specificWeekNum;
+        return false;
+      });
+      if (!db) localStorage.setItem('gym_athlete_logs', JSON.stringify(next));
+      return next;
+    });
+
+    const matchKeyPrefix = (k) => {
+      const lower = k.toLowerCase();
+      if (specificWeekNum !== null) {
+        return lower.startsWith(`${athKey}_w${specificWeekNum}_`);
+      }
+      return lower.startsWith(`${athKey}_`);
+    };
+
+    setCompletedDaysMap(prev => {
+      const next = { ...prev };
+      Object.keys(next).forEach(k => { if (matchKeyPrefix(k)) delete next[k]; });
+      localStorage.setItem('gym_completed_days', JSON.stringify(next));
+      return next;
+    });
+
+    setSubmittedSessionsMap(prev => {
+      const next = { ...prev };
+      Object.keys(next).forEach(k => { if (matchKeyPrefix(k)) delete next[k]; });
+      localStorage.setItem('merlinos_submitted_sessions', JSON.stringify(next));
+      return next;
+    });
+
+    setSessionTimersMap(prev => {
+      const next = { ...prev };
+      Object.keys(next).forEach(k => { if (matchKeyPrefix(k)) delete next[k]; });
+      localStorage.setItem('merlinos_session_timers', JSON.stringify(next));
+      return next;
+    });
+
+    alert(
+      specificWeekNum
+        ? `Settimana ${specificWeekNum} di ${cleanTarget} svuotata con successo!`
+        : `Tutte le settimane di ${cleanTarget} sono state svuotate con successo!`
+    );
+  } catch (err) {
+    alert(`Errore durante lo svuotamento delle settimane: ${err.message}`);
+  }
+};
+
+// =========================================================================
+// B. MODIFICA ESERCIZIO NELL'ANTEPRIMA PROTOCOLLO SCHEDA
+// =========================================================================
+const startEditingProtocolExercise = (item) => {
+  const clonedSets = Array.isArray(item.detailedSets) && item.detailedSets.length > 0
+    ? item.detailedSets.map(ds => ({ ...ds }))
+    : item.setTypeTag !== 'EMOM'
+      ? [{ label: 'Serie 1', targetReps: '8', targetRpe: '8', targetWeight: '80', targetWeightRange: '80' }]
+      : null;
+
+  const clonedEmom = item.emomData
+    ? { ...item.emomData }
+    : { minutes: '10', repsPerMin: '2', targetRpe: '8', targetWeight: '100', targetWeightRange: '100' };
+
+  setEditingProtocolEx({
+    ...item,
+    setTypeTag: item.setTypeTag || 'Standard',
+    detailedSets: clonedSets,
+    emomData: clonedEmom,
+    description: item.description || '',
+    videoUrl: item.videoUrl || ''
+  });
+};
+
+const updateEditingExSetField = (setIdx, field, value) => {
+  setEditingProtocolEx(prev => {
+    if (!prev || !prev.detailedSets) return prev;
+    const nextSets = prev.detailedSets.map((s, idx) => {
+      if (idx !== setIdx) return s;
+      if (field === 'targetWeight') {
+        return { ...s, targetWeight: value, targetWeightRange: value };
+      }
+      return { ...s, [field]: value };
+    });
+    return { ...prev, detailedSets: nextSets };
+  });
+};
+
+const changeEditingExSetsCount = (newCountRaw) => {
+  const targetCount = Math.max(1, Math.min(15, parseInt(newCountRaw, 10) || 1));
+  setEditingProtocolEx(prev => {
+    if (!prev) return prev;
+    const currentSets = Array.isArray(prev.detailedSets) ? [...prev.detailedSets] : [];
+    if (targetCount > currentSets.length) {
+      const template = currentSets[currentSets.length - 1] || {
+        label: 'Serie 1',
+        targetReps: '8',
+        targetRpe: '8',
+        targetWeight: '80',
+        targetWeightRange: '80'
       };
+      for (let i = currentSets.length; i < targetCount; i++) {
+        const newLabel = prev.setTypeTag === 'Top Set / Back-Off'
+          ? (i === 0 ? 'Top Set' : `Back-Off ${i}`)
+          : `Serie ${i + 1}`;
+        currentSets.push({ ...template, label: newLabel });
+      }
+    } else if (targetCount < currentSets.length) {
+      currentSets.splice(targetCount);
+    }
+    return { ...prev, detailedSets: currentSets };
+  });
+};
 
+const removeEditingExSetRow = (setIdx) => {
+  setEditingProtocolEx(prev => {
+    if (!prev || !prev.detailedSets || prev.detailedSets.length <= 1) return prev;
+    const filtered = prev.detailedSets.filter((_, idx) => idx !== setIdx);
+    let backOffIdx = 1;
+    const relabeled = filtered.map((s, idx) => {
+      if (prev.setTypeTag === 'Top Set / Back-Off') {
+        if (s.label && s.label.toLowerCase().startsWith('top set')) return s;
+        return { ...s, label: `Back-Off ${backOffIdx++}` };
+      }
+      return { ...s, label: `Serie ${idx + 1}` };
+    });
+    return { ...prev, detailedSets: relabeled };
+  });
+};
 
+const adjustEditingExWeight = (deltaKg) => {
+  setEditingProtocolEx(prev => {
+    if (!prev) return prev;
+    if (prev.setTypeTag === 'EMOM' && prev.emomData) {
+      const num = parseFloat((prev.emomData.targetWeightRange || prev.emomData.targetWeight || '').toString().replace(/kg/gi, '').trim());
+      if (isNaN(num)) return prev;
+      const updated = Math.max(0, Math.round((num + deltaKg) * 10) / 10).toString();
+      return { ...prev, emomData: { ...prev.emomData, targetWeight: updated, targetWeightRange: updated } };
+    }
+    if (prev.detailedSets) {
+      const nextSets = prev.detailedSets.map(s => {
+        const num = parseFloat((s.targetWeightRange || s.targetWeight || '').toString().replace(/kg/gi, '').trim());
+        if (isNaN(num)) return s;
+        const updated = Math.max(0, Math.round((num + deltaKg) * 10) / 10).toString();
+        return { ...s, targetWeight: updated, targetWeightRange: updated };
+      });
+      return { ...prev, detailedSets: nextSets };
+    }
+    return prev;
+  });
+};
 
+const copyFirstSetToAllEditingEx = () => {
+  setEditingProtocolEx(prev => {
+    if (!prev || !prev.detailedSets || prev.detailedSets.length <= 1) return prev;
+    const first = prev.detailedSets[0];
+    const nextSets = prev.detailedSets.map((s, idx) => idx === 0 ? s : {
+      ...s,
+      targetReps: first.targetReps,
+      targetRpe: first.targetRpe,
+      targetWeight: first.targetWeight,
+      targetWeightRange: first.targetWeightRange
+    });
+    return { ...prev, detailedSets: nextSets };
+  });
+};
+
+const handleSaveEditedProtocolExercise = async () => {
+  if (!editingProtocolEx || isSavingEditedEx) return;
+  const cleanName = (editingProtocolEx.exercise || '').trim().toUpperCase();
+  if (!cleanName) {
+    alert("Inserisci il nome dell'esercizio.");
+    return;
+  }
+
+  setIsSavingEditedEx(true);
+  try {
+    const isEmom = editingProtocolEx.setTypeTag === 'EMOM';
+    const updatedFields = {
+      day: (editingProtocolEx.day || selectedDayTab || 'Giorno A').trim(),
+      exercise: cleanName,
+      plCategory: getPowerliftingCategory(cleanName, editingProtocolEx.dbId),
+      primary: editingProtocolEx.primary || DETAILED_MUSCLE_GROUPS[0],
+      secondary: editingProtocolEx.secondary || 'Nessuno',
+      tertiary: editingProtocolEx.tertiary || 'Nessuno',
+      setTypeTag: editingProtocolEx.setTypeTag || 'Standard',
+      detailedSets: isEmom ? null : (editingProtocolEx.detailedSets || []),
+      emomData: isEmom ? editingProtocolEx.emomData : null,
+      description: sanitizeText(editingProtocolEx.description || '', 500),
+      videoUrl: sanitizeUrl(editingProtocolEx.videoUrl || '')
+    };
+
+    if (db && editingProtocolEx.id) {
+      await db.collection('protocols').doc(editingProtocolEx.id).update(updatedFields);
+    } else {
+      setProtocol(prev =>
+        prev.map(p => (p.id === editingProtocolEx.id ? { ...p, ...updatedFields } : p))
+      );
+    }
+
+    if (updatedFields.day && updatedFields.day !== selectedDayTab) {
+      setSelectedDayTab(updatedFields.day);
+    }
+    setEditingProtocolEx(null);
+  } catch (err) {
+    alert(`Errore durante il salvataggio delle modifiche: ${err.message}`);
+  } finally {
+    setIsSavingEditedEx(false);
+  }
+};
+    
       const filteredExerciseDbList = useMemo(() => {
         if (!dbSearchFilter.trim()) return exerciseDb;
         const query = dbSearchFilter.toLowerCase();
@@ -4883,12 +5143,17 @@ const handleResetToFullDb = async () => {
                                 );
                               })()}
 
-                              {(() => {
+ {(() => {
                                 const athArchivedCount = archivedProtocols.filter(
                                   r => r.athlete.toLowerCase().trim() === ath.toLowerCase().trim()
                                 ).length;
+                                const athWeeksTotal = getAthleteProgramConfig(ath).protocolWeeks || 4;
+                                const athWeeksList = Array.from({ length: athWeeksTotal }, (_, i) => i + 1);
+                                const hasAnyWeekData = athWeeksList.some(wNum => getAthleteWeekStatus(ath, wNum).status !== 'empty');
+                                const areAllWeeksCompleted = athWeeksList.length > 0 && athWeeksList.every(wNum => getAthleteWeekStatus(ath, wNum).status === 'completed');
+
                                 return (
-                        <div className="pt-2 border-t border-slate-900/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                  <div className="pt-2 border-t border-slate-900/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2 flex-wrap">
                                     <button
                                       type="button"
                                       onClick={() => handleArchiveAthleteProtocol(ath)}
@@ -4896,6 +5161,17 @@ const handleResetToFullDb = async () => {
                                     >
                                       <span>📦 Archivia Protocollo</span>
                                     </button>
+
+                                    {hasAnyWeekData && !areAllWeeksCompleted && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleClearAthleteWeeks(ath)}
+                                        title="Svuota tutte le settimane attive se il blocco non è completato"
+                                        className="py-2.5 px-4 rounded-xl bg-red-500/10 hover:bg-red-500/25 border border-red-500/40 text-red-300 hover:text-white text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5"
+                                      >
+                                        <span>🧹 Svuota Settimane</span>
+                                      </button>
+                                    )}
 
                                     {athArchivedCount > 0 && (
                                       <button
@@ -4913,7 +5189,8 @@ const handleResetToFullDb = async () => {
                                     )}
                                   </div>
                                 );
-                              })()}
+                              })()}                           
+  
                             </div>
 
                           </div>
@@ -5713,74 +5990,353 @@ const handleResetToFullDb = async () => {
                               </div>
 
                               <div className="space-y-3">
-                                {currentWeekProtocol
-                                  .filter(p => p.day === selectedDayTab)
-                                  .map((item, index) => {
-                                    const pwCat = getPowerliftingCategory(item.exercise, item.dbId);
+  {currentWeekProtocol
+    .filter(p => p.day === selectedDayTab)
+    .map((item, index) => {
+      const pwCat = getPowerliftingCategory(item.exercise, item.dbId);
+      const isEditingThis = editingProtocolEx && editingProtocolEx.id === item.id;
 
-                                    return (
-                                      <div 
-                                        key={item.id}
-                                        draggable
-                                        onDragStart={(e) => handleDragStart(e, index)}
-                                        onDragOver={handleDragOver}
-                                        onDrop={(e) => handleDrop(e, index)}
-                                        className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-2 transition-all cursor-grab active:cursor-grabbing hover:border-slate-700"
-                                      >
-                                        <div className="flex items-center justify-between gap-3">
-                                          <div className="flex items-center gap-3">
-                                            <span className="text-slate-600 hover:text-cyan-400 text-sm font-bold cursor-grab">:::</span>
-                                            <div>
-                                              <div className="flex items-center gap-2">
-                                                <h4 className="text-sm font-black text-white">{item.exercise}</h4>
-                                                {pwCat && (
-                                                  <span className="bg-red-500/20 border border-red-500/40 text-red-400 text-[9px] font-black px-1.5 py-0.5 rounded uppercase">
-                                                    ⚡ PL ({pwCat})
-                                                  </span>
-                                                )}
-                                              </div>
-                                              <div className="flex items-center gap-2 text-[10px] text-slate-400 mt-0.5">
-                                                <span className="text-cyan-400 font-bold">{item.primary}</span>
-                                                {item.secondary !== 'Nessuno' && <span>/ {item.secondary}</span>}
-                                                {item.tertiary !== 'Nessuno' && <span>/ {item.tertiary}</span>}
-                                              </div>
-                                            </div>
-                                          </div>
+      if (isEditingThis) {
+        return (
+          <div
+            key={item.id}
+            className="bg-slate-950 border-2 border-amber-400/70 rounded-2xl p-4 space-y-4 shadow-2xl"
+          >
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+              <span className="text-xs font-black text-amber-400 uppercase tracking-wider">
+                ✏️ Modifica Esercizio in Scheda (W{activeDisplayWeek})
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingProtocolEx(null)}
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold"
+                >
+                  Annulla
+                </button>
+                <button
+                  type="button"
+                  disabled={isSavingEditedEx}
+                  onClick={handleSaveEditedProtocolExercise}
+                  className="px-4 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-400 text-black text-xs font-black shadow disabled:opacity-50"
+                >
+                  {isSavingEditedEx ? 'Salvataggio...' : '💾 Salva Modifiche'}
+                </button>
+              </div>
+            </div>
 
-                                          <div className="flex items-center gap-3">
-                                            {sanitizeUrl(item.videoUrl) && (
-                                              <a href={sanitizeUrl(item.videoUrl)} target="_blank" rel="noopener noreferrer" className="px-2.5 py-1 bg-red-500/20 text-red-400 border border-red-500/30 rounded-lg text-[10px] font-bold flex items-center gap-1">
-                                                YouTube
-                                              </a>
-                                            )}
-                                            <button onClick={() => deleteExercise(item.id)} className="px-2 py-1 bg-slate-900 border border-slate-800 hover:bg-red-500/20 text-red-400 rounded-lg text-xs font-bold transition-all">
-                                              Elimina
-                                            </button>
-                                          </div>
-                                        </div>
+            {/* Riga 1: Nome Esercizio, Giorno e Struttura */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div>
+                <label className="text-[10px] text-slate-400 font-bold block mb-1">Nome Esercizio</label>
+                <input
+                  type="text"
+                  value={editingProtocolEx.exercise}
+                  onChange={(e) => setEditingProtocolEx(prev => ({ ...prev, exercise: e.target.value }))}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2 text-xs text-cyan-300 font-black uppercase"
+                />
+              </div>
 
-                                        <div className="text-xs text-white font-mono space-y-0.5 pt-1 border-t border-slate-900">
-                                          {item.detailedSets && item.detailedSets.map((ds, dIdx) => (
-                                            <div key={dIdx} className="flex items-center gap-2 font-bold">
-                                              <span className="w-24 text-slate-400 font-sans">{ds.label}:</span>
-                                              <span className="text-white">1 x {ds.targetReps}</span>
-                                              <span className="text-white">{(ds.targetWeightRange || ds.targetWeight || '').replace(/kg/gi, '').trim()} kg</span>
-                                              {ds.targetRpe && <span className="text-emerald-400">@RPE {ds.targetRpe}</span>}
-                                            </div>
-                                          ))}
-                                          {item.setTypeTag === 'EMOM' && item.emomData && (
-                                            <div className="flex items-center gap-2 font-bold text-cyan-300">
-                                              <span className="w-24 text-slate-400 font-sans">EMOM:</span>
-                                              <span>{item.emomData.minutes} Minuti</span>
-                                              <span>({item.emomData.repsPerMin} reps/min</span>
-                                              <span>@ {item.emomData.targetWeight} kg</span>
-                                              {item.emomData.targetRpe && <span className="text-emerald-400">@RPE {item.emomData.targetRpe}</span>})
-                                            </div>
-                                          )}
-                                        </div>
-                                      </div>
-                                    );
-                                  })}
+              <div>
+                <label className="text-[10px] text-slate-400 font-bold block mb-1">Giorno Scheda</label>
+                <input
+                  type="text"
+                  value={editingProtocolEx.day}
+                  onChange={(e) => setEditingProtocolEx(prev => ({ ...prev, day: e.target.value }))}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2 text-xs text-white font-bold"
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] text-slate-400 font-bold block mb-1">Tipologia Struttura</label>
+                <select
+                  value={editingProtocolEx.setTypeTag || 'Standard'}
+                  onChange={(e) => {
+                    const nextTag = e.target.value;
+                    setEditingProtocolEx(prev => {
+                      const hasSets = Array.isArray(prev.detailedSets) && prev.detailedSets.length > 0;
+                      const fallbackSets = hasSets
+                        ? prev.detailedSets
+                        : [{ label: 'Serie 1', targetReps: '8', targetRpe: '8', targetWeight: '80', targetWeightRange: '80' }];
+                      return {
+                        ...prev,
+                        setTypeTag: nextTag,
+                        detailedSets: nextTag === 'EMOM' ? prev.detailedSets : fallbackSets
+                      };
+                    });
+                  }}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2 text-xs text-white font-bold"
+                >
+                  {['Standard', 'Top Set / Back-Off', 'Ascending', 'EMOM'].map(mode => (
+                    <option key={mode} value={mode}>{mode}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Editor Serie / Ripetizioni / Peso / RPE */}
+            {editingProtocolEx.setTypeTag !== 'EMOM' && Array.isArray(editingProtocolEx.detailedSets) && (
+              <div className="space-y-2.5 bg-slate-900/70 border border-slate-800 p-3.5 rounded-xl">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-black text-slate-300 uppercase">Numero Serie:</span>
+                    <button
+                      type="button"
+                      onClick={() => changeEditingExSetsCount(editingProtocolEx.detailedSets.length - 1)}
+                      className="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-black text-sm"
+                    >
+                      −
+                    </button>
+                    <input
+                      type="number"
+                      min="1"
+                      max="15"
+                      value={editingProtocolEx.detailedSets.length}
+                      onChange={(e) => changeEditingExSetsCount(e.target.value)}
+                      className="w-12 bg-slate-950 border border-slate-700 rounded-lg p-1 text-center text-xs text-cyan-400 font-black"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => changeEditingExSetsCount(editingProtocolEx.detailedSets.length + 1)}
+                      className="w-7 h-7 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 font-black text-sm"
+                    >
+                      +
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => adjustEditingExWeight(-2.5)}
+                      className="px-2 py-1 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-700 text-[10px] font-black text-slate-300"
+                    >
+                      -2.5 kg
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => adjustEditingExWeight(2.5)}
+                      className="px-2 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-[10px] font-black text-emerald-300"
+                    >
+                      +2.5 kg
+                    </button>
+                    {editingProtocolEx.detailedSets.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={copyFirstSetToAllEditingEx}
+                        className="px-2 py-1 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/40 text-[10px] font-black text-cyan-300"
+                      >
+                        Copia 1ª su tutte
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  {editingProtocolEx.detailedSets.map((ds, sIdx) => (
+                    <div key={sIdx} className="grid grid-cols-12 gap-2 items-center bg-slate-950/90 border border-slate-800/80 p-2 rounded-xl">
+                      <div className="col-span-3">
+                        <label className="text-[9px] text-slate-400 block">Etichetta</label>
+                        <input
+                          type="text"
+                          value={ds.label}
+                          onChange={(e) => updateEditingExSetField(sIdx, 'label', e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg p-1.5 text-[11px] text-cyan-300 font-black"
+                        />
+                      </div>
+                      <div className="col-span-3">
+                        <label className="text-[9px] text-slate-400 block">Reps</label>
+                        <input
+                          type="number"
+                          value={ds.targetReps}
+                          onChange={(e) => updateEditingExSetField(sIdx, 'targetReps', e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg p-1.5 text-xs text-white font-bold text-center"
+                        />
+                      </div>
+                      <div className="col-span-3">
+                        <label className="text-[9px] text-slate-300 block font-bold">Peso (kg)</label>
+                        <input
+                          type="text"
+                          value={(ds.targetWeightRange || ds.targetWeight || '').toString().replace(/kg/gi, '').trim()}
+                          onChange={(e) => updateEditingExSetField(sIdx, 'targetWeight', e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg p-1.5 text-xs text-white font-bold text-center"
+                        />
+                      </div>
+                      <div className="col-span-2">
+                        <label className="text-[9px] text-emerald-400 block font-bold">RPE</label>
+                        <input
+                          type="text"
+                          value={ds.targetRpe}
+                          onChange={(e) => updateEditingExSetField(sIdx, 'targetRpe', e.target.value)}
+                          className="w-full bg-slate-900 border border-emerald-500/40 rounded-lg p-1.5 text-xs text-emerald-400 font-bold text-center"
+                        />
+                      </div>
+                      <div className="col-span-1 flex justify-end pt-3">
+                        {editingProtocolEx.detailedSets.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => removeEditingExSetRow(sIdx)}
+                            title="Rimuovi serie"
+                            className="w-6 h-6 rounded-lg bg-red-500/15 hover:bg-red-500/30 text-red-400 text-[10px] font-black"
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Editor EMOM */}
+            {editingProtocolEx.setTypeTag === 'EMOM' && editingProtocolEx.emomData && (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 bg-slate-900/70 border border-slate-800 p-3 rounded-xl">
+                <div>
+                  <label className="text-[9px] text-slate-400 block mb-0.5">Minuti (Serie)</label>
+                  <input
+                    type="number"
+                    value={editingProtocolEx.emomData.minutes}
+                    onChange={(e) => setEditingProtocolEx(prev => ({ ...prev, emomData: { ...prev.emomData, minutes: e.target.value } }))}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg p-1.5 text-xs text-white font-bold text-center"
+                  />
+                </div>
+                <div>
+                  <label className="text-[9px] text-slate-400 block mb-0.5">Reps / Minuto</label>
+                  <input
+                    type="number"
+                    value={editingProtocolEx.emomData.repsPerMin}
+                    onChange={(e) => setEditingProtocolEx(prev => ({ ...prev, emomData: { ...prev.emomData, repsPerMin: e.target.value } }))}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg p-1.5 text-xs text-white font-bold text-center"
+                  />
+                </div>
+                <div>
+                  <label className="text-[9px] text-slate-300 block mb-0.5 font-bold">Peso (kg)</label>
+                  <input
+                    type="text"
+                    value={(editingProtocolEx.emomData.targetWeightRange || editingProtocolEx.emomData.targetWeight || '').toString().replace(/kg/gi, '').trim()}
+                    onChange={(e) => setEditingProtocolEx(prev => ({ ...prev, emomData: { ...prev.emomData, targetWeight: e.target.value, targetWeightRange: e.target.value } }))}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg p-1.5 text-xs text-white font-bold text-center"
+                  />
+                </div>
+                <div>
+                  <label className="text-[9px] text-emerald-400 block mb-0.5 font-bold">RPE Target</label>
+                  <input
+                    type="text"
+                    value={editingProtocolEx.emomData.targetRpe}
+                    onChange={(e) => setEditingProtocolEx(prev => ({ ...prev, emomData: { ...prev.emomData, targetRpe: e.target.value } }))}
+                    className="w-full bg-slate-950 border border-emerald-500/40 rounded-lg p-1.5 text-xs text-emerald-400 font-bold text-center"
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Note Coach e Link Video YouTube */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] text-slate-400 font-bold block mb-1">Note Coach per l'atleta</label>
+                <input
+                  type="text"
+                  value={editingProtocolEx.description || ''}
+                  onChange={(e) => setEditingProtocolEx(prev => ({ ...prev, description: e.target.value }))}
+                  placeholder="Note tecniche, fermi, tempo..."
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2 text-xs text-white"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-red-400 font-bold block mb-1">Link Video YouTube</label>
+                <input
+                  type="url"
+                  value={editingProtocolEx.videoUrl || ''}
+                  onChange={(e) => setEditingProtocolEx(prev => ({ ...prev, videoUrl: e.target.value }))}
+                  placeholder="https://youtube.com/watch?v=..."
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2 text-xs text-cyan-300 font-mono"
+                />
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div
+          key={item.id}
+          draggable
+          onDragStart={(e) => handleDragStart(e, index)}
+          onDragOver={handleDragOver}
+          onDrop={(e) => handleDrop(e, index)}
+          className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-2 transition-all cursor-grab active:cursor-grabbing hover:border-slate-700"
+        >
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-3">
+              <span className="text-slate-600 hover:text-cyan-400 text-sm font-bold cursor-grab">:::</span>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h4 className="text-sm font-black text-white">{item.exercise}</h4>
+                  {pwCat && (
+                    <span className="bg-red-500/20 border border-red-500/40 text-red-400 text-[9px] font-black px-1.5 py-0.5 rounded uppercase">
+                      ⚡ PL ({pwCat})
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 text-[10px] text-slate-400 mt-0.5">
+                  <span className="text-cyan-400 font-bold">{item.primary}</span>
+                  {item.secondary !== 'Nessuno' && <span>/ {item.secondary}</span>}
+                  {item.tertiary !== 'Nessuno' && <span>/ {item.tertiary}</span>}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {sanitizeUrl(item.videoUrl) && (
+                <a href={sanitizeUrl(item.videoUrl)} target="_blank" rel="noopener noreferrer" className="px-2.5 py-1 bg-red-500/20 text-red-400 border border-red-500/30 rounded-lg text-[10px] font-bold flex items-center gap-1">
+                  YouTube
+                </a>
+              )}
+              <button
+                type="button"
+                onClick={() => startEditingProtocolExercise(item)}
+                className="px-2.5 py-1 bg-amber-500/15 border border-amber-500/40 hover:bg-amber-500/25 text-amber-300 rounded-lg text-xs font-bold transition-all"
+              >
+                ✏️ Modifica
+              </button>
+              <button
+                type="button"
+                onClick={() => deleteExercise(item.id)}
+                className="px-2.5 py-1 bg-slate-900 border border-slate-800 hover:bg-red-500/20 text-red-400 rounded-lg text-xs font-bold transition-all"
+              >
+                Elimina
+              </button>
+            </div>
+          </div>
+
+          <div className="text-xs text-white font-mono space-y-0.5 pt-1 border-t border-slate-900">
+            {item.detailedSets && item.detailedSets.map((ds, dIdx) => (
+              <div key={dIdx} className="flex items-center gap-2 font-bold">
+                <span className="w-24 text-slate-400 font-sans">{ds.label}:</span>
+                <span className="text-white">1 x {ds.targetReps}</span>
+                <span className="text-white">{(ds.targetWeightRange || ds.targetWeight || '').replace(/kg/gi, '').trim()} kg</span>
+                {ds.targetRpe && <span className="text-emerald-400">@RPE {ds.targetRpe}</span>}
+              </div>
+            ))}
+            {item.setTypeTag === 'EMOM' && item.emomData && (
+              <div className="flex items-center gap-2 font-bold text-cyan-300">
+                <span className="w-24 text-slate-400 font-sans">EMOM:</span>
+                <span>{item.emomData.minutes} Minuti</span>
+                <span>({item.emomData.repsPerMin} reps/min</span>
+                <span>@ {item.emomData.targetWeight} kg</span>
+                {item.emomData.targetRpe && <span className="text-emerald-400">@RPE {item.emomData.targetRpe}</span>})
+              </div>
+            )}
+          </div>
+
+  {item.description && (
+            <p className="text-[11px] text-slate-400 italic pt-1 border-t border-slate-900/70">
+              Note Coach: {item.description}
+            </p>
+          )}
+        </div>
+      );
+    })}
                               </div>
                             </div>
                           )}
