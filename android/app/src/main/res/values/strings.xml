@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">MERLINOS</string>
+    <string name="title_activity_main">MERLINOS</string>
+    <string name="package_name">com.merlinos.app</string>
+    <string name="custom_url_scheme">com.merlinos.app</string>
+</resources>
