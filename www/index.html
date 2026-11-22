@@ -926,42 +926,7 @@ const [athleteVideos, setAthleteVideos] = useState([]);
 const [videoArchiveAthleteFilter, setVideoArchiveAthleteFilter] = useState('ALL');
 const [videoArchiveWeekFilter, setVideoArchiveWeekFilter] = useState('ALL');
 const [deletingVideoId, setDeletingVideoId] = useState(null);
-
-const allArchiveVideos = useMemo(() => {
-  const mapByUrl = new Map();
-
-  // 1. Video salvati nella raccolta dedicata athlete_videos
-  athleteVideos.forEach(v => {
-    if (!v.secureUrl) return;
-    mapByUrl.set(v.secureUrl, {
-      ...v,
-      publicId: v.publicId || extractCloudinaryPublicId(v.secureUrl)
-    });
-  });
-
-  // 2. Recupera anche i video già presenti dentro logs (es. Jax Teller W1)
-  athleteLogs.forEach(l => {
-    const url = sanitizeUrl(l.userVideoUrl);
-    if (!url || mapByUrl.has(url)) return;
-    mapByUrl.set(url, {
-      id: `from_log_${l.id || Math.random()}`,
-      isLogFallback: true,
-      athlete: l.athlete || 'Atleta',
-      weekNum: l.weekNum || 1,
-      week: l.week || `W${l.weekNum || 1}`,
-      day: l.day || '',
-      exercise: l.exercise || 'Esercizio',
-      secureUrl: url,
-      publicId: extractCloudinaryPublicId(url),
-      bytes: 0,
-      duration: 0,
-      uploadedAt: l.timestamp || 0,
-      uploadedDateISO: l.trainingDate || ''
-    });
-  });
-
-  return Array.from(mapByUrl.values()).sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0));
-}, [athleteVideos, athleteLogs]);      const urlParams = new URLSearchParams(window.location.search);
+      const urlParams = new URLSearchParams(window.location.search);
       const urlAthlete = sanitizeText(urlParams.get('atleta'), 80);
 
       const [athleteList, setAthleteList] = useState(() => {
@@ -1162,12 +1127,6 @@ const allArchiveVideos = useMemo(() => {
       const [uploadingVideoExId, setUploadingVideoExId] = useState(null);
       const [videoUploadProgress, setVideoUploadProgress] = useState(0);
 
-     const extractCloudinaryPublicId = (url) => {
-        if (!url || !url.includes('res.cloudinary.com')) return '';
-        const match = url.match(/\/video\/upload\/(?:v\d+\/)?(.+)\.[a-zA-Z0-9]+(?:\?.*)?$/);
-        return match ? decodeURIComponent(match[1]) : '';
-      };
-
       const compressVideoOnPhone = (file, onProgress) => {
         return new Promise((resolve) => {
           // Se il file pesa già meno di 8 MB o il browser non supporta MediaRecorder, invia così com'è
@@ -1179,7 +1138,6 @@ const allArchiveVideos = useMemo(() => {
           let settled = false;
           let activeRecorder = null;
           let activeRafId = null;
-          let processTimer = null;
 
           const video = document.createElement('video');
           video.preload = 'metadata';
@@ -1190,8 +1148,7 @@ const allArchiveVideos = useMemo(() => {
           const safeResolve = (resFile) => {
             if (settled) return;
             settled = true;
-            clearTimeout(metadataTimer);
-            if (processTimer) clearTimeout(processTimer);
+            clearTimeout(fallbackTimer);
             if (activeRafId) cancelAnimationFrame(activeRafId);
             try { video.pause(); } catch (_) {}
             try {
@@ -1201,23 +1158,17 @@ const allArchiveVideos = useMemo(() => {
             resolve(resFile);
           };
 
-          const metadataTimer = setTimeout(() => {
+          const fallbackTimer = setTimeout(() => {
             safeResolve(file);
-          }, 8000);
+          }, 15000);
           video.src = objectUrl;
 
           video.onerror = () => {
+            URL.revokeObjectURL(objectUrl);
             safeResolve(file);
           };
 
           video.onloadedmetadata = () => {
-            clearTimeout(metadataTimer);
-            // Timeout dinamico proporzionale alla durata reale del video (così clip fino a 150 MB non vengono troncate a 15s)
-            const maxAllowedMs = Math.max(45000, Math.ceil((video.duration || 60) * 1800) + 12000);
-            processTimer = setTimeout(() => {
-              safeResolve(file);
-            }, maxAllowedMs);
-
             const maxSide = 720;
             let width = video.videoWidth || 720;
             let height = video.videoHeight || 1280;
@@ -1241,7 +1192,8 @@ const allArchiveVideos = useMemo(() => {
             const ctx = canvas.getContext('2d');
 
             if (!canvas.captureStream) {
-              safeResolve(file);
+              URL.revokeObjectURL(objectUrl);
+              resolve(file);
               return;
             }
 
@@ -1259,10 +1211,11 @@ const allArchiveVideos = useMemo(() => {
             try {
               recorder = new MediaRecorder(stream, {
                 ...(selectedMime ? { mimeType: selectedMime } : {}),
-                videoBitsPerSecond: 1100000 // ~4 MB ogni 30 secondi
+                videoBitsPerSecond: 1200000 // 1.2 Mbps = ~4.5 MB ogni 30 secondi
               });
             } catch (e) {
-              safeResolve(file);
+              URL.revokeObjectURL(objectUrl);
+              resolve(file);
               return;
             }
 
@@ -1272,17 +1225,18 @@ const allArchiveVideos = useMemo(() => {
             };
 
             recorder.onstop = () => {
+              URL.revokeObjectURL(objectUrl);
               const finalType = selectedMime || 'video/mp4';
               const ext = finalType.includes('webm') ? 'webm' : 'mp4';
               const blob = new Blob(chunks, { type: finalType });
               if (blob.size > 0 && blob.size < file.size) {
-                safeResolve(new File([blob], `video_compresso.${ext}`, { type: finalType }));
+                resolve(new File([blob], `video_compresso.${ext}`, { type: finalType }));
               } else {
-                safeResolve(file);
+                resolve(file);
               }
             };
 
-            activeRecorder = recorder;
+          activeRecorder = recorder;
             const drawFrame = () => {
               if (settled || video.paused || video.ended) return;
               ctx.drawImage(video, 0, 0, width, height);
@@ -1319,8 +1273,8 @@ const handleUploadExerciseVideo = async (file, exItem) => {
     alert("Il telefono ha restituito un file vuoto (0 byte). Controlla i permessi Media/Video dell'app.");
     return;
   }
- if (file.size > 150 * 1024 * 1024) {
-    alert("Il video originale supera i 150 MB. Taglia la clip prima di inviarla.");
+  if (file.size > 120 * 1024 * 1024) {
+    alert("Il video originale supera i 120 MB. Taglia la clip a max 45-60 secondi prima di inviarla.");
     return;
   }
 
@@ -1333,13 +1287,6 @@ const handleUploadExerciseVideo = async (file, exItem) => {
   const fileToUpload = await compressVideoOnPhone(file, (compPct) => {
     setVideoUploadProgress(Math.max(1, Math.round(compPct * 0.5)));
   });
-
-  if (fileToUpload.size > 100 * 1024 * 1024) {
-    setUploadingVideoExId(null);
-    setVideoUploadProgress(0);
-    alert("Questo dispositivo non supporta la compressione automatica e il file supera i 100 MB consentiti da Cloudinary.");
-    return;
-  }
 
   const formData = new FormData();
   formData.append("file", fileToUpload);
@@ -1460,16 +1407,14 @@ const handleDownloadArchiveVideo = async (videoItem) => {
 
 const handleDeleteVideoFromCloudAndApp = async (videoItem) => {
   if (!videoItem) return;
-  const resolvedPublicId = videoItem.publicId || extractCloudinaryPublicId(videoItem.secureUrl);
-  const mbText = videoItem.bytes > 0 ? `, ${(videoItem.bytes / (1024 * 1024)).toFixed(2)} MB` : '';
-
-  if (!confirm(`Eliminare definitivamente questo video di ${videoItem.athlete} (${videoItem.exercise}${mbText}) dall'Archivio e da Cloudinary?\n\nI dati dell'allenamento (serie, kg e RPE) resteranno intatti nella scheda.`)) {
+  const mb = ((videoItem.bytes || 0) / (1024 * 1024)).toFixed(2);
+  if (!confirm(`Eliminare definitivamente questo video di ${videoItem.athlete} (${videoItem.exercise}, ${mb} MB) sia dall'app che da Cloudinary?\n\nL'azione è irreversibile e libererà spazio sul cloud.`)) {
     return;
   }
 
   setDeletingVideoId(videoItem.id);
   try {
-    if (resolvedPublicId) {
+    if (videoItem.publicId) {
       const currentUser = auth && auth.currentUser;
       const idToken = currentUser ? await currentUser.getIdToken() : "";
       const res = await fetch(DELETE_VIDEO_ENDPOINT, {
@@ -1478,7 +1423,7 @@ const handleDeleteVideoFromCloudAndApp = async (videoItem) => {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${idToken}`
         },
-        body: JSON.stringify({ publicId: resolvedPublicId })
+        body: JSON.stringify({ publicId: videoItem.publicId })
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
@@ -1487,7 +1432,7 @@ const handleDeleteVideoFromCloudAndApp = async (videoItem) => {
     }
 
     if (db) {
-      if (videoItem.id && !String(videoItem.id).startsWith('from_log_')) {
+      if (videoItem.id) {
         await db.collection('athlete_videos').doc(videoItem.id).delete();
       }
       const linkedLogs = athleteLogs.filter(l => l.userVideoUrl === videoItem.secureUrl);
@@ -1498,11 +1443,12 @@ const handleDeleteVideoFromCloudAndApp = async (videoItem) => {
       }
     }
   } catch (err) {
-    alert(`Impossibile eliminare il video da Cloudinary: ${err.message}`);
+    alert(`Impossibile eliminare il video dal cloud: ${err.message}`);
   } finally {
     setDeletingVideoId(null);
   }
-};      const [protocol, setProtocol] = useState([]);
+};
+      const [protocol, setProtocol] = useState([]);
       const [athleteLogs, setAthleteLogs] = useState([]);
       const [completedDaysMap, setCompletedDaysMap] = useState(() => {
         const saved = localStorage.getItem('gym_completed_days');
@@ -1682,10 +1628,12 @@ const handleDeleteVideoFromCloudAndApp = async (videoItem) => {
         }
       };
 
-      const [selectedDayTab, setSelectedDayTab] = useState('');
-      const [draggedExIndex, setDraggedExIndex] = useState(null);
+const [selectedDayTab, setSelectedDayTab] = useState('');
+const [draggedExIndex, setDraggedExIndex] = useState(null);
 const [editingProtocolEx, setEditingProtocolEx] = useState(null);
 const [isSavingEditedEx, setIsSavingEditedEx] = useState(false);
+
+
       const [newDay, setNewDay] = useState('Giorno A');
       const [selectedDbExId, setSelectedDbExId] = useState('');
       const [newExName, setNewExName] = useState('');
@@ -3865,11 +3813,268 @@ const handleResetToFullDb = async () => {
         if (confirm("Vuoi cancellare questo esercizio?")) {
           if (db) await db.collection('protocols').doc(id).delete();
           else setProtocol(protocol.filter(p => p.id !== id));
+}
+        };
+// =========================================================================
+// A. SVUOTA SETTIMANE NEL DATABASE ATLETI (ANCHE SE NON COMPLETATE LE 4W)
+// =========================================================================
+const handleClearAthleteWeeks = async (athName, specificWeekNum = null) => {
+  if (!athName) return;
+  const athKey = athName.toLowerCase().trim();
+  const cleanTarget = athName.trim();
+  const targetEmail = getAthleteTechEmail(athName);
+
+  const confirmMsg = specificWeekNum
+    ? `Vuoi svuotare la Settimana ${specificWeekNum} di "${cleanTarget}" (esercizi, serie registrate e giorni completati)?\n\nL'azione non è reversibile.`
+    : `Vuoi svuotare TUTTE le settimane attive di "${cleanTarget}" (esercizi programmati, serie registrate, timer e giorni completati)?\n\nUsa questa funzione per ripartire da zero senza archiviare. L'azione non è reversibile.`;
+
+  if (!confirm(confirmMsg)) return;
+
+  try {
+    if (db) {
+      const collections = ['protocols', 'logs', 'completed_days'];
+      for (const colName of collections) {
+        const byName = await db.collection(colName).where('athlete', '==', cleanTarget).get();
+        for (const docSnap of byName.docs) {
+          const data = docSnap.data();
+          const docWeek = data.weekNum || (data.week ? parseInt(String(data.week).replace(/\D/g, ''), 10) : 1);
+          if (specificWeekNum === null || docWeek === specificWeekNum) {
+            await docSnap.ref.delete();
+          }
         }
+
+        const byEmail = await db.collection(colName).where('athleteEmail', '==', targetEmail).get();
+        for (const docSnap of byEmail.docs) {
+          const data = docSnap.data();
+          const docWeek = data.weekNum || (data.week ? parseInt(String(data.week).replace(/\D/g, ''), 10) : 1);
+          if (specificWeekNum === null || docWeek === specificWeekNum) {
+            await docSnap.ref.delete();
+          }
+        }
+      }
+    }
+
+    setProtocol(prev => {
+      const next = prev.filter(p => {
+        if (p.athlete.toLowerCase().trim() !== athKey) return true;
+        if (specificWeekNum !== null) return (p.weekNum || 1) !== specificWeekNum;
+        return false;
+      });
+      if (!db) localStorage.setItem('gym_protocol', JSON.stringify(next));
+      return next;
+    });
+
+    setAthleteLogs(prev => {
+      const next = prev.filter(l => {
+        if (l.athlete.toLowerCase().trim() !== athKey) return true;
+        const logW = l.weekNum || (l.week ? parseInt(String(l.week).replace(/\D/g, ''), 10) : 1);
+        if (specificWeekNum !== null) return logW !== specificWeekNum;
+        return false;
+      });
+      if (!db) localStorage.setItem('gym_athlete_logs', JSON.stringify(next));
+      return next;
+    });
+
+    const matchKeyPrefix = (k) => {
+      const lower = k.toLowerCase();
+      if (specificWeekNum !== null) {
+        return lower.startsWith(`${athKey}_w${specificWeekNum}_`);
+      }
+      return lower.startsWith(`${athKey}_`);
+    };
+
+    setCompletedDaysMap(prev => {
+      const next = { ...prev };
+      Object.keys(next).forEach(k => { if (matchKeyPrefix(k)) delete next[k]; });
+      localStorage.setItem('gym_completed_days', JSON.stringify(next));
+      return next;
+    });
+
+    setSubmittedSessionsMap(prev => {
+      const next = { ...prev };
+      Object.keys(next).forEach(k => { if (matchKeyPrefix(k)) delete next[k]; });
+      localStorage.setItem('merlinos_submitted_sessions', JSON.stringify(next));
+      return next;
+    });
+
+    setSessionTimersMap(prev => {
+      const next = { ...prev };
+      Object.keys(next).forEach(k => { if (matchKeyPrefix(k)) delete next[k]; });
+      localStorage.setItem('merlinos_session_timers', JSON.stringify(next));
+      return next;
+    });
+
+    alert(
+      specificWeekNum
+        ? `Settimana ${specificWeekNum} di ${cleanTarget} svuotata con successo!`
+        : `Tutte le settimane di ${cleanTarget} sono state svuotate con successo!`
+    );
+  } catch (err) {
+    alert(`Errore durante lo svuotamento delle settimane: ${err.message}`);
+  }
+};
+
+// =========================================================================
+// B. MODIFICA ESERCIZIO NELL'ANTEPRIMA PROTOCOLLO SCHEDA
+// =========================================================================
+const startEditingProtocolExercise = (item) => {
+  const clonedSets = Array.isArray(item.detailedSets) && item.detailedSets.length > 0
+    ? item.detailedSets.map(ds => ({ ...ds }))
+    : item.setTypeTag !== 'EMOM'
+      ? [{ label: 'Serie 1', targetReps: '8', targetRpe: '8', targetWeight: '80', targetWeightRange: '80' }]
+      : null;
+
+  const clonedEmom = item.emomData
+    ? { ...item.emomData }
+    : { minutes: '10', repsPerMin: '2', targetRpe: '8', targetWeight: '100', targetWeightRange: '100' };
+
+  setEditingProtocolEx({
+    ...item,
+    setTypeTag: item.setTypeTag || 'Standard',
+    detailedSets: clonedSets,
+    emomData: clonedEmom,
+    description: item.description || '',
+    videoUrl: item.videoUrl || ''
+  });
+};
+
+const updateEditingExSetField = (setIdx, field, value) => {
+  setEditingProtocolEx(prev => {
+    if (!prev || !prev.detailedSets) return prev;
+    const nextSets = prev.detailedSets.map((s, idx) => {
+      if (idx !== setIdx) return s;
+      if (field === 'targetWeight') {
+        return { ...s, targetWeight: value, targetWeightRange: value };
+      }
+      return { ...s, [field]: value };
+    });
+    return { ...prev, detailedSets: nextSets };
+  });
+};
+
+const changeEditingExSetsCount = (newCountRaw) => {
+  const targetCount = Math.max(1, Math.min(15, parseInt(newCountRaw, 10) || 1));
+  setEditingProtocolEx(prev => {
+    if (!prev) return prev;
+    const currentSets = Array.isArray(prev.detailedSets) ? [...prev.detailedSets] : [];
+    if (targetCount > currentSets.length) {
+      const template = currentSets[currentSets.length - 1] || {
+        label: 'Serie 1',
+        targetReps: '8',
+        targetRpe: '8',
+        targetWeight: '80',
+        targetWeightRange: '80'
       };
+      for (let i = currentSets.length; i < targetCount; i++) {
+        const newLabel = prev.setTypeTag === 'Top Set / Back-Off'
+          ? (i === 0 ? 'Top Set' : `Back-Off ${i}`)
+          : `Serie ${i + 1}`;
+        currentSets.push({ ...template, label: newLabel });
+      }
+    } else if (targetCount < currentSets.length) {
+      currentSets.splice(targetCount);
+    }
+    return { ...prev, detailedSets: currentSets };
+  });
+};
 
+const removeEditingExSetRow = (setIdx) => {
+  setEditingProtocolEx(prev => {
+    if (!prev || !prev.detailedSets || prev.detailedSets.length <= 1) return prev;
+    const filtered = prev.detailedSets.filter((_, idx) => idx !== setIdx);
+    let backOffIdx = 1;
+    const relabeled = filtered.map((s, idx) => {
+      if (prev.setTypeTag === 'Top Set / Back-Off') {
+        if (s.label && s.label.toLowerCase().startsWith('top set')) return s;
+        return { ...s, label: `Back-Off ${backOffIdx++}` };
+      }
+      return { ...s, label: `Serie ${idx + 1}` };
+    });
+    return { ...prev, detailedSets: relabeled };
+  });
+};
 
+const adjustEditingExWeight = (deltaKg) => {
+  setEditingProtocolEx(prev => {
+    if (!prev) return prev;
+    if (prev.setTypeTag === 'EMOM' && prev.emomData) {
+      const num = parseFloat((prev.emomData.targetWeightRange || prev.emomData.targetWeight || '').toString().replace(/kg/gi, '').trim());
+      if (isNaN(num)) return prev;
+      const updated = Math.max(0, Math.round((num + deltaKg) * 10) / 10).toString();
+      return { ...prev, emomData: { ...prev.emomData, targetWeight: updated, targetWeightRange: updated } };
+    }
+    if (prev.detailedSets) {
+      const nextSets = prev.detailedSets.map(s => {
+        const num = parseFloat((s.targetWeightRange || s.targetWeight || '').toString().replace(/kg/gi, '').trim());
+        if (isNaN(num)) return s;
+        const updated = Math.max(0, Math.round((num + deltaKg) * 10) / 10).toString();
+        return { ...s, targetWeight: updated, targetWeightRange: updated };
+      });
+      return { ...prev, detailedSets: nextSets };
+    }
+    return prev;
+  });
+};
 
+const copyFirstSetToAllEditingEx = () => {
+  setEditingProtocolEx(prev => {
+    if (!prev || !prev.detailedSets || prev.detailedSets.length <= 1) return prev;
+    const first = prev.detailedSets[0];
+    const nextSets = prev.detailedSets.map((s, idx) => idx === 0 ? s : {
+      ...s,
+      targetReps: first.targetReps,
+      targetRpe: first.targetRpe,
+      targetWeight: first.targetWeight,
+      targetWeightRange: first.targetWeightRange
+    });
+    return { ...prev, detailedSets: nextSets };
+  });
+};
+
+const handleSaveEditedProtocolExercise = async () => {
+  if (!editingProtocolEx || isSavingEditedEx) return;
+  const cleanName = (editingProtocolEx.exercise || '').trim().toUpperCase();
+  if (!cleanName) {
+    alert("Inserisci il nome dell'esercizio.");
+    return;
+  }
+
+  setIsSavingEditedEx(true);
+  try {
+    const isEmom = editingProtocolEx.setTypeTag === 'EMOM';
+    const updatedFields = {
+      day: (editingProtocolEx.day || selectedDayTab || 'Giorno A').trim(),
+      exercise: cleanName,
+      plCategory: getPowerliftingCategory(cleanName, editingProtocolEx.dbId),
+      primary: editingProtocolEx.primary || DETAILED_MUSCLE_GROUPS[0],
+      secondary: editingProtocolEx.secondary || 'Nessuno',
+      tertiary: editingProtocolEx.tertiary || 'Nessuno',
+      setTypeTag: editingProtocolEx.setTypeTag || 'Standard',
+      detailedSets: isEmom ? null : (editingProtocolEx.detailedSets || []),
+      emomData: isEmom ? editingProtocolEx.emomData : null,
+      description: sanitizeText(editingProtocolEx.description || '', 500),
+      videoUrl: sanitizeUrl(editingProtocolEx.videoUrl || '')
+    };
+
+    if (db && editingProtocolEx.id) {
+      await db.collection('protocols').doc(editingProtocolEx.id).update(updatedFields);
+    } else {
+      setProtocol(prev =>
+        prev.map(p => (p.id === editingProtocolEx.id ? { ...p, ...updatedFields } : p))
+      );
+    }
+
+    if (updatedFields.day && updatedFields.day !== selectedDayTab) {
+      setSelectedDayTab(updatedFields.day);
+    }
+    setEditingProtocolEx(null);
+  } catch (err) {
+    alert(`Errore durante il salvataggio delle modifiche: ${err.message}`);
+  } finally {
+    setIsSavingEditedEx(false);
+  }
+};
+    
       const filteredExerciseDbList = useMemo(() => {
         if (!dbSearchFilter.trim()) return exerciseDb;
         const query = dbSearchFilter.toLowerCase();
@@ -4938,55 +5143,54 @@ const handleResetToFullDb = async () => {
                                 );
                               })()}
 
-                              {(() => {
+ {(() => {
                                 const athArchivedCount = archivedProtocols.filter(
                                   r => r.athlete.toLowerCase().trim() === ath.toLowerCase().trim()
                                 ).length;
+                                const athWeeksTotal = getAthleteProgramConfig(ath).protocolWeeks || 4;
+                                const athWeeksList = Array.from({ length: athWeeksTotal }, (_, i) => i + 1);
+                                const hasAnyWeekData = athWeeksList.some(wNum => getAthleteWeekStatus(ath, wNum).status !== 'empty');
+                                const areAllWeeksCompleted = athWeeksList.length > 0 && athWeeksList.every(wNum => getAthleteWeekStatus(ath, wNum).status === 'completed');
+
                                 return (
-          {(() => {
-  const hasAnyWeekData = athWeeksList.some(wNum => getAthleteWeekStatus(ath, wNum).status !== 'empty');
-  const areAllWeeksCompleted = athWeeksList.length > 0 && athWeeksList.every(wNum => getAthleteWeekStatus(ath, wNum).status === 'completed');
+                                  <div className="pt-2 border-t border-slate-900/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2 flex-wrap">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleArchiveAthleteProtocol(ath)}
+                                      className="flex-1 py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-indigo-600/25 border border-indigo-500/40 text-indigo-300 hover:text-white text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2"
+                                    >
+                                      <span>📦 Archivia Protocollo</span>
+                                    </button>
 
-  return (
-    <div className="pt-2 border-t border-slate-900/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2 flex-wrap">
-      <button
-        type="button"
-        onClick={() => handleArchiveAthleteProtocol(ath)}
-        className="flex-1 py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-indigo-600/25 border border-indigo-500/40 text-indigo-300 hover:text-white text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2"
-      >
-        <span>📦 Archivia Protocollo</span>
-      </button>
+                                    {hasAnyWeekData && !areAllWeeksCompleted && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleClearAthleteWeeks(ath)}
+                                        title="Svuota tutte le settimane attive se il blocco non è completato"
+                                        className="py-2.5 px-4 rounded-xl bg-red-500/10 hover:bg-red-500/25 border border-red-500/40 text-red-300 hover:text-white text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5"
+                                      >
+                                        <span>🧹 Svuota Settimane</span>
+                                      </button>
+                                    )}
 
-      {hasAnyWeekData && !areAllWeeksCompleted && (
-        <button
-          type="button"
-          onClick={() => handleClearAthleteWeeks(ath)}
-          title="Svuota tutte le settimane attive se il blocco non è completato"
-          className="py-2.5 px-4 rounded-xl bg-red-500/10 hover:bg-red-500/25 border border-red-500/40 text-red-300 hover:text-white text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5"
-        >
-          <span>🧹 Svuota Settimane</span>
-        </button>
-      )}
-
-      {athArchivedCount > 0 && (
-        <button
-          type="button"
-          onClick={() => {
-            setSelectedAthleteForCoach(ath);
-            setArchiveAthleteFilter(ath);
-            setSelectedArchiveReport(null);
-            setCoachSubTab('archive');
-          }}
-          className="px-3.5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-cyan-300 text-xs font-bold transition-all whitespace-nowrap"
-        >
-          Vedi Storico ({athArchivedCount})
-        </button>
-      )}
-    </div>
-  );
-})()}
+                                    {athArchivedCount > 0 && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setSelectedAthleteForCoach(ath);
+                                          setArchiveAthleteFilter(ath);
+                                          setSelectedArchiveReport(null);
+                                          setCoachSubTab('archive');
+                                        }}
+                                        className="px-3.5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-cyan-300 text-xs font-bold transition-all whitespace-nowrap"
+                                      >
+                                        Vedi Storico ({athArchivedCount})
+                                      </button>
+                                    )}
+                                  </div>
                                 );
-                              })()}
+                              })()}                           
+  
                             </div>
 
                           </div>
@@ -5123,6 +5327,8 @@ const handleResetToFullDb = async () => {
                               ? archivedProtocols.filter(r => r.athlete.toLowerCase().trim() === selectedAthleteForCoach.toLowerCase().trim()).length
                               : archivedProtocols.length}
                           </span>
+                        </button>
+
                         <button
                           onClick={() => {
                             setVideoArchiveAthleteFilter(selectedAthleteForCoach || 'ALL');
@@ -5137,8 +5343,8 @@ const handleResetToFullDb = async () => {
                           <span>🎥 Video</span>
                           <span className="px-1.5 py-0.5 rounded bg-black/30 text-[10px]">
                             {selectedAthleteForCoach
-                              ? allArchiveVideos.filter(v => (v.athlete || '').toLowerCase().trim() === selectedAthleteForCoach.toLowerCase().trim()).length
-                              : allArchiveVideos.length}
+                              ? athleteVideos.filter(v => (v.athlete || '').toLowerCase().trim() === selectedAthleteForCoach.toLowerCase().trim()).length
+                              : athleteVideos.length}
                           </span>
                         </button>
 
@@ -5783,7 +5989,7 @@ const handleResetToFullDb = async () => {
                                 ))}
                               </div>
 
-                            <div className="space-y-3">
+                              <div className="space-y-3">
   {currentWeekProtocol
     .filter(p => p.day === selectedDayTab)
     .map((item, index) => {
@@ -6123,7 +6329,7 @@ const handleResetToFullDb = async () => {
             )}
           </div>
 
-          {item.description && (
+  {item.description && (
             <p className="text-[11px] text-slate-400 italic pt-1 border-t border-slate-900/70">
               Note Coach: {item.description}
             </p>
@@ -6131,50 +6337,6 @@ const handleResetToFullDb = async () => {
         </div>
       );
     })}
-                                  
-                                              </div>
-                                              <div className="flex items-center gap-2 text-[10px] text-slate-400 mt-0.5">
-                                                <span className="text-cyan-400 font-bold">{item.primary}</span>
-                                                {item.secondary !== 'Nessuno' && <span>/ {item.secondary}</span>}
-                                                {item.tertiary !== 'Nessuno' && <span>/ {item.tertiary}</span>}
-                                              </div>
-                                            </div>
-                                          </div>
-
-                                          <div className="flex items-center gap-3">
-                                            {sanitizeUrl(item.videoUrl) && (
-                                              <a href={sanitizeUrl(item.videoUrl)} target="_blank" rel="noopener noreferrer" className="px-2.5 py-1 bg-red-500/20 text-red-400 border border-red-500/30 rounded-lg text-[10px] font-bold flex items-center gap-1">
-                                                YouTube
-                                              </a>
-                                            )}
-                                            <button onClick={() => deleteExercise(item.id)} className="px-2 py-1 bg-slate-900 border border-slate-800 hover:bg-red-500/20 text-red-400 rounded-lg text-xs font-bold transition-all">
-                                              Elimina
-                                            </button>
-                                          </div>
-                                        </div>
-
-                                        <div className="text-xs text-white font-mono space-y-0.5 pt-1 border-t border-slate-900">
-                                          {item.detailedSets && item.detailedSets.map((ds, dIdx) => (
-                                            <div key={dIdx} className="flex items-center gap-2 font-bold">
-                                              <span className="w-24 text-slate-400 font-sans">{ds.label}:</span>
-                                              <span className="text-white">1 x {ds.targetReps}</span>
-                                              <span className="text-white">{(ds.targetWeightRange || ds.targetWeight || '').replace(/kg/gi, '').trim()} kg</span>
-                                              {ds.targetRpe && <span className="text-emerald-400">@RPE {ds.targetRpe}</span>}
-                                            </div>
-                                          ))}
-                                          {item.setTypeTag === 'EMOM' && item.emomData && (
-                                            <div className="flex items-center gap-2 font-bold text-cyan-300">
-                                              <span className="w-24 text-slate-400 font-sans">EMOM:</span>
-                                              <span>{item.emomData.minutes} Minuti</span>
-                                              <span>({item.emomData.repsPerMin} reps/min</span>
-                                              <span>@ {item.emomData.targetWeight} kg</span>
-                                              {item.emomData.targetRpe && <span className="text-emerald-400">@RPE {item.emomData.targetRpe}</span>})
-                                            </div>
-                                          )}
-                                        </div>
-                                      </div>
-                                    );
-                                  })}
                               </div>
                             </div>
                           )}
@@ -7905,10 +8067,10 @@ const handleResetToFullDb = async () => {
                       );
                  })()}
 
-                  {/* SEZIONE ARCHIVIO VIDEO ATLETI + DOWNLOAD ED ELIMINAZIONE CLOUDINARY */}
+                    {/* SEZIONE ARCHIVIO VIDEO ATLETI + DOWNLOAD ED ELIMINAZIONE CLOUDINARY */}
                     {coachSubTab === 'videos' && (() => {
                       const effectiveAth = selectedAthleteForCoach || videoArchiveAthleteFilter;
-                      const filteredVideos = allArchiveVideos.filter(v => {
+                      const filteredVideos = athleteVideos.filter(v => {
                         const matchAth = !effectiveAth || effectiveAth === 'ALL'
                           ? true
                           : (v.athlete || '').toLowerCase().trim() === effectiveAth.toLowerCase().trim();
@@ -7917,9 +8079,9 @@ const handleResetToFullDb = async () => {
                           : Number(v.weekNum) === Number(videoArchiveWeekFilter);
                         return matchAth && matchWeek;
                       });
-                  const totalBytesAll = allArchiveVideos.reduce((acc, v) => acc + (Number(v.bytes) || 0), 0);
+                      const totalBytesAll = athleteVideos.reduce((acc, v) => acc + (Number(v.bytes) || 0), 0);
                       const totalMBAll = (totalBytesAll / (1024 * 1024)).toFixed(1);
-                      const uniqueVideoAthletes = Array.from(new Set(allArchiveVideos.map(v => v.athlete).filter(Boolean))).sort();
+                      const uniqueVideoAthletes = Array.from(new Set(athleteVideos.map(v => v.athlete).filter(Boolean))).sort();
 
                       return (
                         <div className="space-y-6">
@@ -7931,7 +8093,7 @@ const handleResetToFullDb = async () => {
                               <p className="text-xs text-slate-400 mt-1">
                                 Spazio stimato occupato su Cloudinary:{" "}
                                 <span className="text-cyan-400 font-black">{totalMBAll} MB</span>{" "}
-                                ({allArchiveVideos.length} video totali nel cloud)
+                                ({athleteVideos.length} video totali nel cloud)
                               </p>
                             </div>
 
