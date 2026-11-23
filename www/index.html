@@ -2,8 +2,35 @@
 <html lang="it">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MERLINOS - Performance & Strength Protocol V12</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>MERLINOS - Performance & Strength Protocol v12</title>
+  <style>
+    /* Su smartphone (Capacitor Android, iPhone e browser mobile) garantisce sempre lo spazio per le barre di sistema */
+    @media (max-width: 768px) {
+      .merlinos-safe-header {
+        padding-top: calc(max(env(safe-area-inset-top, 0px), 34px) + 10px) !important;
+      }
+      .merlinos-safe-nav {
+        padding-bottom: calc(max(env(safe-area-inset-bottom, 0px), 52px) + 8px) !important;
+      }
+    }
+
+    /* Su PC / schermi grandi mantiene il padding compatto */
+    @media (min-width: 769px) {
+      .merlinos-safe-header {
+        padding-top: 16px !important;
+      }
+      .merlinos-safe-nav {
+        padding-bottom: 12px !important;
+      }
+    }
+
+    /* Comportamento fluido da App nativa */
+    html, body {
+      overscroll-behavior-y: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+  </style>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
@@ -4157,7 +4184,7 @@ const filteredExerciseDbList = useMemo(() => {
 
       return (
         <div className="min-h-screen flex flex-col pb-10">
-          <header className="bg-slate-900 border-b border-slate-800 px-6 py-4 flex items-center justify-between sticky top-0 z-30 shadow-xl">
+        <header className="merlinos-safe-header bg-slate-900 border-b border-slate-800 px-6 py-4 flex items-center justify-between sticky top-0 z-30 shadow-xl">
             <div className="flex items-center gap-3">
               <MerlinosLogo className="w-11 h-11" />
               <div>
@@ -8359,7 +8386,7 @@ const filteredExerciseDbList = useMemo(() => {
                    
 {role === 'athlete' && isLoggedInAthlete && (
             <>
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 sm:p-6 pb-28 space-y-6 shadow-xl">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 sm:p-6 pb-40 space-y-6 shadow-xl">
 
                 {/* HEADER COMPATTO MERLINOS + NOME ATLETA */}
  
@@ -9137,7 +9164,7 @@ const filteredExerciseDbList = useMemo(() => {
                 {/* ========================================================= */}
                 {/* BARRA DI NAVIGAZIONE INFERIORE FISSA (3 SCHEDE)           */}
                 {/* ========================================================= */}
-                <nav className="fixed bottom-0 left-0 right-0 z-40 bg-slate-950/95 backdrop-blur-md border-t border-slate-800 px-4 py-2.5">
+               <nav className="merlinos-safe-nav fixed bottom-0 left-0 right-0 z-40 bg-slate-950/95 backdrop-blur-md border-t border-slate-800 px-4 pt-2.5">
                   <div className="max-w-md mx-auto grid grid-cols-3 gap-2 items-center">
                     {/* 1. CHECK-IN */}
                     <button
