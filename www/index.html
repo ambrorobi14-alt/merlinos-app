@@ -1124,6 +1124,139 @@ const [sessionDuration, setSessionDuration] = useState('90');
 const [isDurationManual, setIsDurationManual] = useState(false);
 const [durationNotes, setDurationNotes] = useState('');
 
+// Navigazione lato Atleta (3 pagine: 'checkin' | 'workout' | 'analysis')
+const [athleteSubTab, setAthleteSubTab] = useState('checkin');
+const [dailyJournalText, setDailyJournalText] = useState('');
+const [dailyJournalSaved, setDailyJournalSaved] = useState(false);
+const [sessionNoteSaved, setSessionNoteSaved] = useState(false);
+
+useEffect(() => {
+  const athData = getAthleteBwData(currentActiveTarget);
+  const savedEntry = athData?.dailyJournal?.[bwInputDate];
+  setDailyJournalText(savedEntry?.text || '');
+}, [currentActiveTarget, bwInputDate, athleteBwMap]);
+
+const saveAthleteDailyJournal = async (athName, dateISO, textVal) => {
+  if (!athName || !dateISO) return;
+  const key = athName.toLowerCase().trim();
+  const current = getAthleteBwData(athName);
+  const cleanMsg = sanitizeText(textVal, 500);
+  const nextJournal = {
+    ...(current.dailyJournal || {}),
+    [dateISO]: {
+      text: cleanMsg,
+      dateISO,
+      updatedAt: Date.now()
+    }
+  };
+  const updated = {
+    ...current,
+    athlete: athName.trim(),
+    athleteEmail: getAthleteTechEmail(athName),
+    dailyJournal: nextJournal,
+    updatedAt: Date.now()
+  };
+  setAthleteBwMap(prev => {
+    const next = { ...prev, [key]: updated };
+    localStorage.setItem('merlinos_athlete_bw_map', JSON.stringify(next));
+    return next;
+  });
+  if (db) {
+    await db.collection('athlete_bw').doc(getAthleteDocId(athName)).set(updated, { merge: true });
+  }
+  setDailyJournalSaved(true);
+  setTimeout(() => setDailyJournalSaved(false), 2500);
+};
+
+const saveAthleteSessionNote = async () => {
+  const cleanAth = currentActiveTarget.trim();
+  const wNum = activeDisplayWeek || 1;
+  const dayName = selectedDayTab || 'Seduta';
+  const key = `${cleanAth}_W${wNum}_${dayName}`;
+  const cleanNote = sanitizeText(durationNotes, 500);
+  const now = Date.now();
+  const hooperTotal =
+    (parseInt(sleepScore) || 0) +
+    (parseInt(stressScore) || 0) +
+    (parseInt(fatigueScore) || 0) +
+    (parseInt(domsScore) || 0);
+
+  const prevSub = submittedSessionsMap[key] || {};
+  const payload = {
+    ...prevSub,
+    key,
+    athlete: cleanAth,
+    athleteEmail: getAthleteTechEmail(cleanAth),
+    weekNum: wNum,
+    day: dayName,
+    submittedToCoach: true,
+    submittedAt: prevSub.submittedAt || now,
+    submittedDateISO: trainingDate || getTodayISO(),
+    sessionDurationMinutes: parseInt(sessionDuration) || 90,
+    hooper: hooperTotal,
+    sessionNotes: cleanNote,
+    updatedAt: now
+  };
+
+  setSubmittedSessionsMap(prev => {
+    const next = { ...prev, [key]: payload };
+    localStorage.setItem('merlinos_submitted_sessions', JSON.stringify(next));
+    return next;
+  });
+
+  if (db) {
+    const docId = getAthleteDocId(key);
+    await db.collection('completed_days').doc(docId).set(payload, { merge: true });
+  }
+
+ setSessionNoteSaved(true);
+  setTimeout(() => setSessionNoteSaved(false), 2500);
+};
+
+const saveExercisePersonalNote = async (exItem, noteText) => {
+  if (!exItem) return;
+  const athName = currentActiveTarget.trim();
+  const key = athName.toLowerCase();
+  const wNum = Number(exItem.weekNum || activeDisplayWeek || 1) || 1;
+  const dayName = String(exItem.day || selectedDayTab || '').trim();
+  const exName = String(exItem.exercise || '').trim();
+  const cleanNote = sanitizeText(noteText, 500);
+  const noteKey = `W${wNum}_${dayName}_${exName.toLowerCase()}`;
+
+  const current = getAthleteBwData(athName);
+  const nextExNotes = { ...(current.exerciseNotes || {}) };
+
+  if (!cleanNote) {
+    delete nextExNotes[noteKey];
+  } else {
+    nextExNotes[noteKey] = {
+      key: noteKey,
+      weekNum: wNum,
+      day: dayName,
+      exercise: exName,
+      text: cleanNote,
+      updatedAt: Date.now()
+    };
+  }
+
+  const updated = {
+    ...current,
+    athlete: athName,
+    athleteEmail: getAthleteTechEmail(athName),
+    exerciseNotes: nextExNotes,
+    updatedAt: Date.now()
+  };
+
+  setAthleteBwMap(prev => {
+    const next = { ...prev, [key]: updated };
+    localStorage.setItem('merlinos_athlete_bw_map', JSON.stringify(next));
+    return next;
+  });
+
+  if (db) {
+    await db.collection('athlete_bw').doc(getAthleteDocId(athName)).set(updated, { merge: true });
+  }
+};
 // Tracciamento automatico orario inizio/fine seduta per giorno e settimana
 const [sessionTimersMap, setSessionTimersMap] = useState(() => {
   try {
@@ -4039,29 +4172,29 @@ const filteredExerciseDbList = useMemo(() => {
               </div>
             </div>
             
-            <div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-end">
-              {/* Controlli Password dedicati all'ATLETA */}
-              {role === 'athlete' && isLoggedInAthlete && (
-                <>
-                  <button
-                    onClick={() => {
-                      setAthCurrentPwInput('');
-                      setAthVoluntaryNewPw('');
-                      setAthVoluntaryConfirmPw('');
-                      setIsAthletePwModalOpen(true);
-                    }}
-                    className="px-3 py-1.5 rounded-full bg-slate-800 hover:bg-slate-700 text-emerald-400 text-xs font-bold border border-emerald-500/30 transition-all"
-                  >
-                    🔑 Password Atleta
-                  </button>
-                  <button
-                    onClick={handleAthleteLogout}
-                    className="px-3 py-1.5 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 text-xs font-bold border border-slate-700"
-                  >
-                    Esci
-                  </button>
-                </>
-              )}
+<div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-end">
+        {/* Controlli Password dedicati all'ATLETA */}
+            {role === 'athlete' && isLoggedInAthlete && (
+              <>
+                <button
+                  onClick={() => {
+                    setAthCurrentPwInput('');
+                    setAthVoluntaryNewPw('');
+                    setAthVoluntaryConfirmPw('');
+                    setIsAthletePwModalOpen(true);
+                  }}
+                  className="px-3 py-1.5 rounded-full bg-slate-800 hover:bg-slate-700 text-lime-300 border border-lime-400/40 text-xs font-bold transition-all"
+                >
+                  🔑 Password Atleta
+                </button>
+                <button
+                  onClick={handleAthleteLogout}
+                  className="px-3 py-1.5 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 text-xs font-bold border border-slate-700"
+                >
+                  Esci
+                </button>
+              </>
+            )}
 
               {/* Controlli Password dedicati al COACH */}
               {role === 'coach' && (
@@ -8224,54 +8357,99 @@ const filteredExerciseDbList = useMemo(() => {
               </div>
             )}
                    
+{role === 'athlete' && isLoggedInAthlete && (
+            <>
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 sm:p-6 pb-28 space-y-6 shadow-xl">
 
+                {/* HEADER COMPATTO MERLINOS + NOME ATLETA */}
  
-
-            {role === 'athlete' && isLoggedInAthlete && (<div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6 shadow-xl">
-                
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800 pb-4 gap-2">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800 pb-4 gap-3">
                   <div className="flex items-center gap-3">
-                    <MerlinosLogo className="w-10 h-10" />
+                    <MerlinosLogo className="w-11 h-11" />
                     <div>
-                      <h2 className="text-lg font-extrabold text-white">
-                        Protocollo: <span className="text-cyan-400 font-black">{currentActiveTarget}</span>
-                      </h2>
+                      <span className="text-lg font-black tracking-wide bg-gradient-to-r from-emerald-400 to-lime-300 bg-clip-text text-transparent block leading-tight">
+                        MERLINOS
+                      </span>
+                      <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">
+                        {currentActiveTarget}
+                      </span>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-1.5 bg-slate-950 p-1.5 rounded-xl border border-slate-800">
-                    <span className="text-[10px] text-slate-400 font-bold px-2 uppercase">Settimana:</span>
-                    {protocolWeeksArray.map(wNum => {
-                      const isAvail = activeAthleteProtocol.some(p => (p.weekNum || 1) === wNum);
-                      const isSel = activeDisplayWeek === wNum;
-                      return (
-                        <button
-                          key={wNum}
-                          disabled={!isAvail}
-                          onClick={() => setSelectedWeekFilter(wNum)}
-                          className={`px-3 py-1 rounded-lg text-xs font-black transition-all ${
-                            isSel 
-                              ? 'bg-amber-400 text-black shadow-md' 
-                              : isAvail 
-                                ? 'bg-slate-900 text-slate-300 hover:bg-slate-800' 
-                                : 'bg-slate-950 text-slate-700 cursor-not-allowed'
-                          }`}
-                        >
-                          W{wNum}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div> 
-                
+                  {/* Selettore Settimane (visibile su Scheda e Analisi) */}
+                  {athleteSubTab !== 'checkin' && (
+                    <div className="flex items-center gap-1.5 bg-slate-950 p-1.5 rounded-xl border border-slate-800 overflow-x-auto">
+                      {protocolWeeksArray.map(wNum => {
+                        const isAvail = activeAthleteProtocol.some(p => (p.weekNum || 1) === wNum);
+                        const isSel = activeDisplayWeek === wNum;
+                        return (
+                          <button
+                            key={wNum}
+                            disabled={!isAvail}
+                            onClick={() => setSelectedWeekFilter(wNum)}
+                            className={`px-3.5 py-1.5 rounded-full text-xs font-black transition-all ${
+                              isSel
+                                ? 'bg-gradient-to-r from-emerald-400 to-lime-300 text-black shadow-[0_0_12px_rgba(163,230,53,0.45)]'
+                                : isAvail
+                                  ? 'bg-slate-900 text-slate-300 hover:bg-slate-800'
+                                  : 'bg-slate-950 text-slate-700 cursor-not-allowed'
+                            }`}
+                          >
+                            W{wNum}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
 
-                    {/* Riquadro Compatto Peso Corporeo Mattutino (Con spunta di attivazione/disattivazione) */}
+                {/* ========================================================= */}
+                {/* PAGINA 1: CHECK-IN (SALUTO + GIORNATA + PESO + HOOPER)    */}
+                {/* ========================================================= */}
+                {athleteSubTab === 'checkin' && (
+                  <div className="space-y-5">
+                    {/* 1. SALUTO PERSONALIZZATO & DIARIO GIORNALIERO */}
+                    <div className="bg-slate-950/90 border border-lime-400/30 rounded-2xl p-5 space-y-3 shadow-lg">
+                      <div className="flex items-center justify-between gap-2">
+                        <h3 className="text-base sm:text-lg font-black uppercase tracking-wide text-white">
+                          CIAO{' '}
+                          <span className="bg-gradient-to-r from-emerald-400 to-lime-300 bg-clip-text text-transparent">
+                            {currentActiveTarget.trim().split(/\s+/)[0].toUpperCase()}
+                          </span>
+                          , COME VA OGGI?
+                        </h3>
+                        {dailyJournalSaved && (
+                          <span className="text-[11px] font-black text-lime-300 bg-lime-400/15 border border-lime-400/30 px-2.5 py-0.5 rounded-full">
+                            ✓ Salvato
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row gap-2.5">
+                        <input
+                          type="text"
+                          value={dailyJournalText}
+                          onChange={(e) => setDailyJournalText(e.target.value)}
+                          placeholder="Scrivi com'è andata la tua giornata..."
+                          className="flex-1 bg-slate-900 border border-slate-800 focus:border-lime-400 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-white placeholder-slate-500 focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => saveAthleteDailyJournal(currentActiveTarget, bwInputDate, dailyJournalText)}
+                          className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-400 to-lime-300 hover:opacity-95 text-black text-xs font-black uppercase tracking-wider shadow transition-all shrink-0"
+                        >
+                          Invia
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* 2. MONITORAGGIO PESO CORPOREO (BW) */}
                     {(() => {
                       const athBw = getAthleteBwData(currentActiveTarget);
                       const existingWeightForDate = (athBw.weights && athBw.weights[bwInputDate]) || '';
                       return (
-                        <div className="bg-slate-950/90 border border-emerald-500/30 rounded-xl px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                          <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                        <div className="bg-slate-950/90 border border-emerald-500/30 rounded-2xl p-5 space-y-4 shadow-lg">
+                          <label className="flex items-start gap-2.5 cursor-pointer select-none">
                             <input
                               type="checkbox"
                               checked={bwTrackEnabled}
@@ -8279,13 +8457,13 @@ const filteredExerciseDbList = useMemo(() => {
                                 setBwTrackEnabled(e.target.checked);
                                 localStorage.setItem('merlinos_bw_track_enabled', e.target.checked ? 'true' : 'false');
                               }}
-                              className="w-4 h-4 accent-emerald-500 rounded cursor-pointer"
+                              className="w-4 h-4 mt-0.5 accent-lime-400 rounded cursor-pointer"
                             />
                             <div>
-                              <span className="text-xs font-black text-emerald-400 uppercase tracking-wider block">
+                              <span className="text-xs sm:text-sm font-black bg-gradient-to-r from-emerald-400 to-lime-300 bg-clip-text text-transparent uppercase tracking-wider block">
                                 Monitoraggio Peso Corporeo (BW)
                               </span>
-                              <span className="text-[10px] text-slate-400">
+                              <span className="text-[11px] text-slate-400">
                                 {bwTrackEnabled
                                   ? 'Inserisci il peso mattutino a digiuno (sincronizzato con il Coach).'
                                   : 'Attiva la spunta se vuoi registrare il tuo peso corporeo oggi.'}
@@ -8294,27 +8472,30 @@ const filteredExerciseDbList = useMemo(() => {
                           </label>
 
                           {bwTrackEnabled && (
-                            <div className="flex flex-wrap items-center gap-2">
-                             <input
-                                type="date"
-                                value={bwInputDate}
-                                onChange={(e) => {
-                                  setBwInputDate(e.target.value);
-                                  setBwInputWeight(null);
-                                }}
-                                className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-bold focus:border-emerald-400 focus:outline-none"
-                              />
-                              <div className="flex items-center bg-slate-900 border border-emerald-500/40 rounded-lg px-2.5 py-1">
+                            <div className="space-y-3">
+                              <div className="grid grid-cols-2 gap-3">
                                 <input
-                                  type="number"
-                                  step="0.1"
-                                  value={bwInputWeight !== null ? bwInputWeight : existingWeightForDate}
-                                  onChange={(e) => setBwInputWeight(e.target.value)}
-                                  placeholder="es. 76.4"
-                                  className="w-16 bg-transparent text-xs text-emerald-300 font-black font-mono text-right focus:outline-none"
+                                  type="date"
+                                  value={bwInputDate}
+                                  onChange={(e) => {
+                                    setBwInputDate(e.target.value);
+                                    setBwInputWeight(null);
+                                  }}
+                                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-xs sm:text-sm text-white font-bold focus:border-lime-400 focus:outline-none"
                                 />
-                                <span className="text-[10px] text-slate-400 font-bold ml-1">kg</span>
+                                <div className="flex items-center justify-between bg-slate-900 border border-lime-400/60 rounded-xl px-3.5 py-2.5">
+                                  <input
+                                    type="number"
+                                    step="0.1"
+                                    value={bwInputWeight !== null ? bwInputWeight : existingWeightForDate}
+                                    onChange={(e) => setBwInputWeight(e.target.value)}
+                                    placeholder="76.4"
+                                    className="w-full bg-transparent text-sm text-white font-black font-mono text-center focus:outline-none"
+                                  />
+                                  <span className="text-xs text-slate-400 font-bold ml-1">kg</span>
+                                </div>
                               </div>
+
                               <button
                                 type="button"
                                 onClick={async () => {
@@ -8327,7 +8508,7 @@ const filteredExerciseDbList = useMemo(() => {
                                   setBwInputWeight(null);
                                   alert(`Peso (${parseFloat(valToSave).toFixed(1)} kg) registrato per il ${formatItalianDate(bwInputDate)}!`);
                                 }}
-                                className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-black transition-all"
+                                className="w-full py-3 rounded-full bg-gradient-to-r from-emerald-400 to-lime-300 hover:opacity-95 text-black text-xs sm:text-sm font-black tracking-wide shadow-md transition-all"
                               >
                                 Salva Peso
                               </button>
@@ -8337,88 +8518,92 @@ const filteredExerciseDbList = useMemo(() => {
                       );
                     })()}
 
-                {availableDays.length === 0 ? (
-                  <div className="text-center py-8 text-slate-500 text-xs">Nessun esercizio in scheda.</div>
-                ) : (
-                  <div className="space-y-6">
-                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-800">
-                      <div className="flex items-center gap-2 overflow-x-auto pb-1">
-                        {availableDays.map(dayName => {
-                          const isSelected = selectedDayTab === dayName;
-                          const dayKey = `${currentActiveTarget}_W${activeDisplayWeek}_${dayName}`;
-                          const isDayDone = completedDaysMap[dayKey] === true;
-
-                          return (
-                            <button
-                              key={dayName}
-                              onClick={() => setSelectedDayTab(dayName)}
-                              className={`px-4 py-2.5 rounded-xl font-bold text-xs flex items-center gap-2 transition-all whitespace-nowrap shadow-md ${
-                                isSelected 
-                                  ? 'bg-cyan-500 text-black border border-cyan-400' 
-                                  : 'bg-slate-950 text-slate-300 border border-slate-800 hover:border-slate-700'
-                              }`}
-                            >
-                              <span>{dayName}</span>
-                              {isDayDone && <span className="text-emerald-400 text-xs font-black">COMPLETATO</span>}
-                            </button>
-                          );
-                        })}
+                    {/* 3. HOOPER INDEX (SCALA 1 - 7) */}
+                    <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-5 space-y-4 shadow-lg">
+                      <div className="flex items-center justify-between border-b border-slate-800 pb-3 gap-2">
+                        <span className="text-xs sm:text-sm font-black text-white uppercase tracking-wider">
+                          HOOPER INDEX (SCALA 1 - 7)
+                        </span>
+                        <span className="text-xs font-black text-black bg-gradient-to-r from-emerald-400 to-lime-300 px-3 py-1 rounded-xl shadow">
+                          Totale: {parseInt(sleepScore)+parseInt(stressScore)+parseInt(fatigueScore)+parseInt(domsScore)} / 28
+                        </span>
                       </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 text-xs">
+                        <div>
+                          <label className="text-xs font-bold text-slate-200 block mb-1.5">1. Qualità del Sonno</label>
+                          <select value={sleepScore} onChange={(e) => setSleepScore(e.target.value)} className="w-full bg-slate-900 border border-lime-400/50 rounded-xl p-2.5 text-xs text-white focus:outline-none">
+                            {Object.entries(HOOPER_DESCRIPTIONS.sleep).map(([k, desc]) => <option key={k} value={k}>{desc}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-xs font-bold text-slate-200 block mb-1.5">2. Livello di Stress</label>
+                          <select value={stressScore} onChange={(e) => setStressScore(e.target.value)} className="w-full bg-slate-900 border border-lime-400/50 rounded-xl p-2.5 text-xs text-white focus:outline-none">
+                            {Object.entries(HOOPER_DESCRIPTIONS.stress).map(([k, desc]) => <option key={k} value={k}>{desc}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-xs font-bold text-slate-200 block mb-1.5">3. Livello di Fatica</label>
+                          <select value={fatigueScore} onChange={(e) => setFatigueScore(e.target.value)} className="w-full bg-slate-900 border border-lime-400/50 rounded-xl p-2.5 text-xs text-white focus:outline-none">
+                            {Object.entries(HOOPER_DESCRIPTIONS.fatigue).map(([k, desc]) => <option key={k} value={k}>{desc}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-xs font-bold text-slate-200 block mb-1.5">4. Dolori Muscolari (DOMS)</label>
+                          <select value={domsScore} onChange={(e) => setDomsScore(e.target.value)} className="w-full bg-slate-900 border border-lime-400/50 rounded-xl p-2.5 text-xs text-white focus:outline-none">
+                            {Object.entries(HOOPER_DESCRIPTIONS.doms).map(([k, desc]) => <option key={k} value={k}>{desc}</option>)}
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
-                      <div className="flex flex-wrap items-center gap-2.5">
-                        <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 px-3 py-1.5 rounded-xl">
-                          <label className="text-[10px] font-black text-cyan-400 uppercase tracking-wider whitespace-nowrap">
+                {/* ========================================================= */}
+                {/* PAGINA 2: LA SCHEDA (GIORNI + ESERCIZI + SERIE)           */}
+                {/* ========================================================= */}
+                {athleteSubTab === 'workout' && (
+                  availableDays.length === 0 ? (
+                    <div className="text-center py-8 text-slate-500 text-xs">Nessun esercizio in scheda.</div>
+                  ) : (
+                    <div className="space-y-6">
+                      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+                        <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                          {availableDays.map(dayName => {
+                            const isSelected = selectedDayTab === dayName;
+                            const dayKey = `${currentActiveTarget}_W${activeDisplayWeek}_${dayName}`;
+                            const isDayDone = completedDaysMap[dayKey] === true;
+
+                            return (
+                              <button
+                                key={dayName}
+                                onClick={() => setSelectedDayTab(dayName)}
+                                className={`px-4 py-2 rounded-full font-black text-xs flex items-center gap-2 transition-all whitespace-nowrap shadow-md ${
+                                  isSelected
+                                    ? 'bg-gradient-to-r from-emerald-400 to-lime-300 text-black'
+                                    : 'bg-slate-950 text-slate-300 border border-slate-800 hover:border-slate-700'
+                                }`}
+                              >
+                                <span>{dayName}</span>
+                                {isDayDone && <span className={`text-[10px] font-black ${isSelected ? 'text-black' : 'text-emerald-400'}`}>✓</span>}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 px-3 py-1.5 rounded-xl w-fit">
+                          <label className="text-[10px] font-black text-emerald-400 uppercase tracking-wider whitespace-nowrap">
                             Data Seduta:
                           </label>
                           <input
                             type="date"
                             value={trainingDate}
                             onChange={(e) => setTrainingDate(e.target.value)}
-                            className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white font-bold focus:border-cyan-400 focus:outline-none"
+                            className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white font-bold focus:border-lime-400 focus:outline-none"
                           />
                         </div>
-
                       </div>
-                    </div>
 
-
-
-                    <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-5 space-y-4">
-                      <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                        <span className="text-xs font-black text-cyan-400 uppercase tracking-wider">Hooper Index (Scala 1 - 7)</span>
-                        <span className="text-xs font-black text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-0.5 rounded-lg">
-                          Totale: {parseInt(sleepScore)+parseInt(stressScore)+parseInt(fatigueScore)+parseInt(domsScore)} / 28
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
-                        <div>
-                          <label className="text-[11px] font-bold text-slate-300 block mb-1">1. Qualità del Sonno</label>
-                          <select value={sleepScore} onChange={(e) => setSleepScore(e.target.value)} className="w-full bg-slate-900 border border-slate-800 rounded-xl p-2 text-xs text-white">
-                            {Object.entries(HOOPER_DESCRIPTIONS.sleep).map(([k, desc]) => <option key={k} value={k}>{desc}</option>)}
-                          </select>
-                        </div>
-                        <div>
-                          <label className="text-[11px] font-bold text-slate-300 block mb-1">2. Livello di Stress</label>
-                          <select value={stressScore} onChange={(e) => setStressScore(e.target.value)} className="w-full bg-slate-900 border border-slate-800 rounded-xl p-2 text-xs text-white">
-                            {Object.entries(HOOPER_DESCRIPTIONS.stress).map(([k, desc]) => <option key={k} value={k}>{desc}</option>)}
-                          </select>
-                        </div>
-                        <div>
-                          <label className="text-[11px] font-bold text-slate-300 block mb-1">3. Livello di Fatica</label>
-                          <select value={fatigueScore} onChange={(e) => setFatigueScore(e.target.value)} className="w-full bg-slate-900 border border-slate-800 rounded-xl p-2 text-xs text-white">
-                            {Object.entries(HOOPER_DESCRIPTIONS.fatigue).map(([k, desc]) => <option key={k} value={k}>{desc}</option>)}
-                          </select>
-                        </div>
-                        <div>
-                          <label className="text-[11px] font-bold text-slate-300 block mb-1">4. Dolori Muscolari (DOMS)</label>
-                          <select value={domsScore} onChange={(e) => setDomsScore(e.target.value)} className="w-full bg-slate-900 border border-slate-800 rounded-xl p-2 text-xs text-white">
-                            {Object.entries(HOOPER_DESCRIPTIONS.doms).map(([k, desc]) => <option key={k} value={k}>{desc}</option>)}
-                          </select>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="space-y-4">
+                      <div className="space-y-4">
                       {currentWeekProtocol
                         .filter(p => p.day === selectedDayTab)
                         .map((item) => {
@@ -8427,8 +8612,8 @@ const filteredExerciseDbList = useMemo(() => {
                           const isDone = exLogs.length > 0;
                           const pwCat = getPowerliftingCategory(item.exercise, item.dbId);
 
-                          return (
-                            <div key={item.id} className={`rounded-2xl border transition-all ${isSelected ? 'bg-slate-950 border-cyan-500/60 shadow-lg' : isDone ? 'bg-slate-950/70 border-emerald-500/30' : 'bg-slate-950/90 border-slate-800 hover:border-slate-700'}`}>
+                       return (
+                            <div key={item.id} className={`rounded-2xl border transition-all ${isSelected ? 'bg-slate-950 border-lime-400/70 shadow-[0_0_16px_rgba(163,230,53,0.12)]' : isDone ? 'bg-slate-950/70 border-emerald-500/30' : 'bg-slate-950/90 border-slate-800 hover:border-slate-700'}`}>
                               
                               <div onClick={() => handleSelectExerciseForAthlete(item)} className="p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 cursor-pointer">
                                 <div className="space-y-2 flex-1">
@@ -8447,27 +8632,18 @@ const filteredExerciseDbList = useMemo(() => {
                                   </div>
 
                                   <div className="text-xs text-white font-mono space-y-0.5 pt-1">
-                                  {item.detailedSets && item.detailedSets.map((ds, dsIdx) => (
-                                          <div key={dsIdx} className="flex items-center gap-2 text-[11px]">
-                                            <span className="w-24 text-slate-400 font-sans">{ds.label}:</span>
-                                            <span className="text-white">1 x {ds.targetReps}</span>
-                                            <span className="text-white">{String(ds.targetWeightRange || ds.targetWeight || '').replace(/kg/gi, '').trim()} kg</span>
-                                            {ds.targetRpe && <span className="text-emerald-400">@RPE {ds.targetRpe}</span>}
-                                          </div>
-                                        ))}
-                                        {item.setTypeTag === 'EMOM' && item.emomData && (
-                                          <div className="flex items-center gap-2 text-[11px] text-cyan-300 font-bold">
-                                            <span className="w-24 text-slate-400 font-sans">EMOM:</span>
-                                            <span>{item.emomData.minutes} Minuti ({item.emomData.repsPerMin} reps/min @ {item.emomData.targetWeight} kg {item.emomData.targetRpe ? `@RPE ${item.emomData.targetRpe}` : ''})</span>
-                                          </div>
-                                        )}
+                                    {item.detailedSets && item.detailedSets.map((ds, dsIdx) => (
+                                      <div key={dsIdx} className="flex items-center gap-2 text-[11px]">
+                                        <span className="w-24 text-lime-300/90 font-sans font-bold">{ds.label}:</span>
+                                        <span className="text-white">1 x {ds.targetReps}</span>
+                                        <span className="text-white">{String(ds.targetWeightRange || ds.targetWeight || '').replace(/kg/gi, '').trim()} kg</span>
+                                        {ds.targetRpe && <span className="text-emerald-400">@RPE {ds.targetRpe}</span>}
+                                      </div>
+                                    ))}
                                     {item.setTypeTag === 'EMOM' && item.emomData && (
-                                      <div className="flex items-center gap-2 font-bold text-cyan-300">
+                                      <div className="flex items-center gap-2 text-[11px] text-lime-300 font-bold">
                                         <span className="w-24 text-slate-400 font-sans">EMOM:</span>
-                                        <span>{item.emomData.minutes} Minuti</span>
-                                        <span>({item.emomData.repsPerMin} reps/min</span>
-                                        <span>@ {item.emomData.targetWeight} kg</span>
-                                        {item.emomData.targetRpe && <span className="text-emerald-400">@RPE {item.emomData.targetRpe}</span>})
+                                        <span>{item.emomData.minutes} Minuti ({item.emomData.repsPerMin} reps/min @ {item.emomData.targetWeight} kg {item.emomData.targetRpe ? `@RPE ${item.emomData.targetRpe}` : ''})</span>
                                       </div>
                                     )}
                                   </div>
@@ -8483,7 +8659,11 @@ const filteredExerciseDbList = useMemo(() => {
                                 </div>
 
                                 <div className="text-right shrink-0">
-                                  <span className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-cyan-400">
+                                  <span className={`px-4 py-2 rounded-xl text-xs font-black transition-all shadow ${
+                                    isSelected
+                                      ? 'bg-slate-800 hover:bg-slate-700 text-lime-300 border border-lime-400/40'
+                                      : 'bg-gradient-to-r from-emerald-400 to-lime-300 hover:opacity-95 text-black'
+                                  }`}>
                                     {isSelected ? 'Chiudi Serie' : 'Compila Serie'}
                                   </span>
                                 </div>
@@ -8500,7 +8680,7 @@ const filteredExerciseDbList = useMemo(() => {
                                       <span className="font-bold text-slate-300">
                                         Compilazione Serie Prescritte:
                                       </span>
-                                      <span className={`font-mono font-black ${allPrescribedDone ? 'text-emerald-400' : 'text-amber-400'}`}>
+                                      <span className={`font-mono font-black ${allPrescribedDone ? 'text-emerald-400' : 'text-lime-300'}`}>
                                         {compiledSetsCount} / {totalPrescribedSets} serie completate
                                       </span>
                                     </div>
@@ -8519,7 +8699,7 @@ const filteredExerciseDbList = useMemo(() => {
                                           >
                                             <div className="w-full md:w-1/3">
                                               <div className="flex items-center gap-2">
-                                                <span className="text-xs font-extrabold text-cyan-400">{s.label}</span>
+                                                <span className="text-xs font-extrabold text-lime-300">{s.label}</span>
                                                 {isRowDone ? (
                                                   <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 text-[9px] font-black uppercase">
                                                     ✓ Compilata
@@ -8547,7 +8727,7 @@ const filteredExerciseDbList = useMemo(() => {
                                                   onBlur={() => {
                                                     if (areAllSetsCompiled(setsData)) handleSaveAllSets(item, { isAuto: true });
                                                   }}
-                                                  className="w-full bg-slate-900 border border-slate-800 focus:border-cyan-400 rounded-lg p-2 text-xs text-white font-bold text-center focus:outline-none"
+                                                  className="w-full bg-slate-900 border border-slate-800 focus:border-lime-400 rounded-lg p-2 text-xs text-white font-bold text-center focus:outline-none"
                                                 />
                                               </div>
                                               <div>
@@ -8560,7 +8740,7 @@ const filteredExerciseDbList = useMemo(() => {
                                                   onBlur={() => {
                                                     if (areAllSetsCompiled(setsData)) handleSaveAllSets(item, { isAuto: true });
                                                   }}
-                                                  className="w-full bg-slate-900 border border-slate-800 focus:border-cyan-400 rounded-lg p-2 text-xs text-white font-bold text-center focus:outline-none"
+                                                  className="w-full bg-slate-900 border border-slate-800 focus:border-lime-400 rounded-lg p-2 text-xs text-white font-bold text-center focus:outline-none"
                                                 />
                                               </div>
                                               <div>
@@ -8576,7 +8756,7 @@ const filteredExerciseDbList = useMemo(() => {
                                                   onBlur={() => {
                                                     if (areAllSetsCompiled(setsData)) handleSaveAllSets(item, { isAuto: true });
                                                   }}
-                                                  className="w-full bg-slate-900 border border-emerald-500/40 focus:border-emerald-400 rounded-lg p-2 text-xs text-emerald-400 font-bold text-center focus:outline-none"
+                                                  className="w-full bg-slate-900 border border-emerald-500/40 focus:border-lime-400 rounded-lg p-2 text-xs text-emerald-400 font-bold text-center focus:outline-none"
                                                 />
                                               </div>
                                             </div>
@@ -8587,24 +8767,27 @@ const filteredExerciseDbList = useMemo(() => {
 
                                     <div className="space-y-3 pt-2">
                                       <div>
-                                        <label className="text-[10px] text-slate-400 block mb-1">Note Personali / Sensazioni</label>
+                                        <label className="text-[10px] font-bold text-lime-300/90 uppercase tracking-wider block mb-1">
+                                          Note Personali / Sensazioni (inviate al Raccoglitore Feedback)
+                                        </label>
                                         <input
                                           type="text"
                                           value={athleteNotes}
                                           onChange={(e) => setAthleteNotes(e.target.value)}
                                           onBlur={() => {
+                                            saveExercisePersonalNote(item, athleteNotes);
                                             if (areAllSetsCompiled(setsData)) handleSaveAllSets(item, { isAuto: true });
                                           }}
                                           placeholder="Es. Peso facile, fermo pulito..."
-                                          className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white"
+                                          className="w-full bg-slate-950 border border-slate-800 focus:border-lime-400 rounded-xl p-2.5 text-xs text-white focus:outline-none"
                                         />
                                       </div>
 
                                       {/* Riquadro Invio Video Esecuzione */}
-                                      <div className="bg-slate-950 border border-cyan-500/30 rounded-xl p-3.5 space-y-3">
+                                      <div className="bg-slate-950 border border-lime-400/30 rounded-xl p-3.5 space-y-3">
                                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                                           <div>
-                                            <span className="text-[11px] font-black text-cyan-400 uppercase tracking-wider block">
+                                            <span className="text-[11px] font-black bg-gradient-to-r from-emerald-400 to-lime-300 bg-clip-text text-transparent uppercase tracking-wider block">
                                               📹 Video Esecuzione per il Coach
                                             </span>
                                             <span className="text-[10px] text-slate-400">
@@ -8615,7 +8798,7 @@ const filteredExerciseDbList = useMemo(() => {
                                           <label className={`px-3.5 py-2 rounded-xl text-xs font-black uppercase tracking-wider cursor-pointer transition-all text-center shrink-0 ${
                                             uploadingVideoExId === item.id
                                               ? 'bg-slate-800 text-slate-400 cursor-wait'
-                                              : 'bg-gradient-to-r from-cyan-500 to-emerald-400 hover:opacity-90 text-black shadow'
+                                              : 'bg-gradient-to-r from-emerald-400 to-lime-300 hover:opacity-90 text-black shadow'
                                           }`}>
                                             {uploadingVideoExId === item.id
                                               ? `Caricamento ${videoUploadProgress}%...`
@@ -8640,7 +8823,7 @@ const filteredExerciseDbList = useMemo(() => {
                                         {uploadingVideoExId === item.id && (
                                           <div className="w-full h-2 bg-slate-900 rounded-full overflow-hidden border border-slate-800">
                                             <div
-                                              className="h-full bg-gradient-to-r from-cyan-400 to-emerald-400 transition-all duration-200"
+                                              className="h-full bg-gradient-to-r from-emerald-400 to-lime-300 transition-all duration-200"
                                               style={{ width: `${videoUploadProgress}%` }}
                                             />
                                           </div>
@@ -8674,7 +8857,7 @@ const filteredExerciseDbList = useMemo(() => {
                                                 href={sanitizeUrl(athleteVideoUrl)}
                                                 target="_blank"
                                                 rel="noopener noreferrer"
-                                                className="inline-block text-xs text-cyan-300 underline font-mono break-all"
+                                                className="inline-block text-xs text-lime-300 underline font-mono break-all"
                                               >
                                                 {sanitizeUrl(athleteVideoUrl)}
                                               </a>
@@ -8692,26 +8875,26 @@ const filteredExerciseDbList = useMemo(() => {
                                               if (areAllSetsCompiled(setsData)) handleSaveAllSets(item, { isAuto: true });
                                             }}
                                             placeholder="Oppure incolla link YouTube / Drive / Instagram (https://...)"
-                                            className="w-full bg-slate-900 border border-slate-800 rounded-xl p-2 text-[11px] text-cyan-400 font-mono"
+                                            className="w-full bg-slate-900 border border-slate-800 focus:border-lime-400 rounded-xl p-2 text-[11px] text-emerald-300 font-mono focus:outline-none"
                                           />
                                         </div>
                                       </div>
                                     </div>
 
-                                    {/* Stato Salvataggio Automatico (al posto del bottone rimosso) */}
+                                    {/* Stato Salvataggio Automatico */}
                                     {!allPrescribedDone ? (
                                       <div className="w-full py-3 px-4 rounded-xl bg-slate-950 border border-slate-800 text-center text-xs font-bold text-slate-400">
                                         ⏳ Compila tutte le <span className="text-white font-black">{totalPrescribedSets} serie prescritte</span> (Peso, Reps e RPE) per attivare il salvataggio automatico
                                       </div>
                                     ) : autoSaveStatus === 'saving' || autoSaveStatus === 'pending' ? (
-                                      <div className="w-full py-3 px-4 rounded-xl bg-cyan-500/15 border border-cyan-500/40 text-center text-xs font-black text-cyan-300 uppercase tracking-wider animate-pulse">
+                                      <div className="w-full py-3 px-4 rounded-xl bg-lime-400/15 border border-lime-400/40 text-center text-xs font-black text-lime-300 uppercase tracking-wider animate-pulse">
                                         🔄 Salvataggio automatico delle {totalPrescribedSets} serie in corso...
                                       </div>
                                     ) : autoSaveStatus === 'error' ? (
                                       <div className="w-full py-3 px-4 rounded-xl bg-red-500/15 border border-red-500/40 text-center text-xs font-black text-red-300">
                                         ⚠️ Errore durante il salvataggio automatico. Riprova a modificare un campo.
                                       </div>
-                                    ) : (
+) : (
                                       <div className="w-full py-3 px-4 rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-center text-xs font-black text-emerald-400 uppercase tracking-wider">
                                         ✓ Tutte le {totalPrescribedSets} serie prescritte sono state salvate automaticamente!
                                       </div>
@@ -8722,144 +8905,292 @@ const filteredExerciseDbList = useMemo(() => {
                             </div>
                           );
                         })}
+                      </div>
                     </div>
+                  )
+                )}
 
-                    <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-5 space-y-4">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-2">
-                        <span className="text-xs font-black text-emerald-400 uppercase tracking-wider">Durata Allenamento (Calcolo Automatico)</span>
-                        {activeTimerInfo && activeTimerInfo.startTime ? (
-                          <div className="flex items-center gap-2 text-[11px]">
-                            <span className="px-2 py-0.5 rounded bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 font-bold">
-                              ⏱ 1ª Serie: {formatTimeHHMM(activeTimerInfo.startTime)} → Ultima Serie: {formatTimeHHMM(activeTimerInfo.endTime || activeTimerInfo.startTime)}
+                {/* ========================================================= */}
+                {/* PAGINA 3: ANALISI ALLENAMENTO + RACCOGLITORE FEEDBACK     */}
+                {/* ========================================================= */}
+                                
+                {athleteSubTab === 'analysis' && (() => {
+                  const dayKey = `${currentActiveTarget}_W${activeDisplayWeek}_${selectedDayTab}`;
+                  const isDayDone = completedDaysMap[dayKey] === true;
+                  const subInfo = submittedSessionsMap[dayKey] || null;
+                  const progress = getDayCompletionProgress(currentActiveTarget, activeDisplayWeek, selectedDayTab);
+                  const pct = progress.totalSets > 0
+                    ? Math.round((progress.completedSets / progress.totalSets) * 100)
+                    : 0;
+
+                 // Raccoglitore Feedback Atleta: raccoglie tutte le "Note Personali / Sensazioni" degli esercizi in Scheda
+                  const feedbackByExerciseMap = new Map();
+                  const athBwData = getAthleteBwData(currentActiveTarget);
+
+                  // 1. Note salvate nei log delle serie (athleteLogs)
+                  athleteLogs.forEach(l => {
+                    if (
+                      l &&
+                      l.athlete?.toLowerCase() === currentActiveTarget.toLowerCase() &&
+                      l.athleteNotes &&
+                      l.athleteNotes.trim()
+                    ) {
+                      const wNum = l.weekNum || parseInt(String(l.week || '1').replace(/\D/g, ''), 10) || 1;
+                      const dayStr = String(l.day || '').trim();
+                      const exStr = String(l.exercise || '').trim();
+                      const mapKey = `W${wNum}_${dayStr}_${exStr.toLowerCase()}`;
+
+                      feedbackByExerciseMap.set(mapKey, {
+                        id: `log_${mapKey}`,
+                        tag: `${dayStr ? `${dayStr} ` : ''}W${wNum} • ${exStr}`,
+                        type: `W${wNum}`,
+                        text: l.athleteNotes.trim(),
+                        ts: l.timestamp || 0
+                      });
+                    }
+                  });
+
+                  // 2. Note salvate al volo da "Note Personali / Sensazioni" (anche prima di finire tutte le serie)
+                  if (athBwData?.exerciseNotes) {
+                    Object.values(athBwData.exerciseNotes).forEach(entry => {
+                      if (entry && entry.text && entry.text.trim()) {
+                        const wNum = entry.weekNum || 1;
+                        const dayStr = String(entry.day || '').trim();
+                        const exStr = String(entry.exercise || '').trim();
+                        const mapKey = `W${wNum}_${dayStr}_${exStr.toLowerCase()}`;
+
+                        feedbackByExerciseMap.set(mapKey, {
+                          id: `note_${mapKey}`,
+                          tag: `${dayStr ? `${dayStr} ` : ''}W${wNum} • ${exStr}`,
+                          type: `W${wNum}`,
+                          text: entry.text.trim(),
+                          ts: entry.updatedAt || Date.now()
+                        });
+                      }
+                    });
+                  }
+
+                  // 3. Eventuale nota appena scritta nell'esercizio attualmente aperto in Scheda
+                  if (selectedExId && athleteNotes && athleteNotes.trim()) {
+                    const openEx = protocol.find(p => p.id === selectedExId);
+                    if (openEx) {
+                      const wNum = openEx.weekNum || activeDisplayWeek || 1;
+                      const dayStr = String(openEx.day || selectedDayTab || '').trim();
+                      const exStr = String(openEx.exercise || '').trim();
+                      const mapKey = `W${wNum}_${dayStr}_${exStr.toLowerCase()}`;
+
+                      feedbackByExerciseMap.set(mapKey, {
+                        id: `live_${mapKey}`,
+                        tag: `${dayStr ? `${dayStr} ` : ''}W${wNum} • ${exStr}`,
+                        type: `W${wNum}`,
+                        text: athleteNotes.trim(),
+                        ts: Date.now()
+                      });
+                    }
+                  }
+
+                  const collectedFeedbacks = Array.from(feedbackByExerciseMap.values())
+                    .sort((a, b) => b.ts - a.ts);
+                  return (
+                    <div className="space-y-5">
+                      {/* 1. RIEPILOGO DURATA & AVANZAMENTO SEDUTA */}
+                      <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-5 space-y-4 shadow-lg">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
+                          <span className="text-xs sm:text-sm font-black bg-gradient-to-r from-emerald-400 to-lime-300 bg-clip-text text-transparent uppercase tracking-wider">
+                            ANALISI ALLENAMENTO • {selectedDayTab || 'SEDUTA'} (W{activeDisplayWeek})
+                          </span>
+                          {activeTimerInfo && activeTimerInfo.startTime && (
+                            <div className="flex items-center gap-2 text-[11px]">
+                              <span className="px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-bold">
+                                ⏱ {formatTimeHHMM(activeTimerInfo.startTime)} → {formatTimeHHMM(activeTimerInfo.endTime || activeTimerInfo.startTime)}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={handleResetSessionTimer}
+                                className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 text-[10px] font-bold"
+                              >
+                                Reset
+                              </button>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Box Durata + Avanzamento */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+                          <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 flex items-center justify-between">
+                            <span className="text-xs font-bold text-slate-400">Durata (min):</span>
+                            <input
+                              type="number"
+                              min="1"
+                              max="360"
+                              value={sessionDuration}
+                              onChange={(e) => {
+                                setSessionDuration(e.target.value);
+                                setIsDurationManual(true);
+                              }}
+                              className="w-24 bg-slate-950 border border-lime-400/50 rounded-lg py-1 px-2 text-lg font-black text-center bg-gradient-to-r from-emerald-400 to-lime-300 bg-clip-text text-transparent focus:outline-none"
+                            />
+                          </div>
+
+                          <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 text-right">
+                            <span className="text-[11px] font-bold text-slate-400 block">Completamento Seduta</span>
+                            <span className="text-sm font-black text-emerald-400 font-mono">
+                              {progress.completedExercises}/{progress.totalExercises} Esercizi • {progress.completedSets}/{progress.totalSets} Serie ({pct}%)
                             </span>
-                            <button
-                              type="button"
-                              onClick={handleResetSessionTimer}
-                              className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 text-[10px] font-bold"
-                              title="Azzera orario inizio seduta"
-                            >
-                              Reset
-                            </button>
+                          </div>
+                        </div>
+
+                        <div className="w-full h-2.5 bg-slate-900 rounded-full overflow-hidden border border-slate-800">
+                          <div
+                            className="h-full bg-gradient-to-r from-emerald-400 to-lime-300 transition-all duration-500"
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+
+                        {(isDayDone || progress.isAllComplete) ? (
+                          <div className="bg-emerald-500/15 border border-emerald-500/40 rounded-xl px-3.5 py-2.5 text-xs text-emerald-300 font-bold flex items-center justify-between gap-2">
+                            <span>✓ Seduta completata e sincronizzata con il Coach</span>
+                            {subInfo?.totalTonnage > 0 && (
+                              <span className="font-mono text-lime-300">{subInfo.totalTonnage} kg tot</span>
+                            )}
                           </div>
                         ) : (
-                          <span className="text-[10px] text-slate-400 font-medium">
-                            Parte automaticamente alla 1ª serie inserita in generale e si aggiorna fino all'ultima serie inserita
-                          </span>
+                          <div className="bg-slate-900/90 border border-slate-800 rounded-xl px-3.5 py-2.5 flex items-center justify-between text-xs text-slate-300">
+                            <span>Invio automatico al Coach al completamento</span>
+                            <span className="font-mono font-black text-lime-300">
+                              {Math.max(0, progress.totalExercises - progress.completedExercises)} rimasti
+                            </span>
+                          </div>
                         )}
                       </div>
 
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
-                        <div>
-                          <label className="text-[11px] font-bold text-slate-300 block mb-1">
-                            Durata Totale Seduta (Minuti) {isDurationManual ? '(Modificata manualmente)' : activeTimerInfo?.startTime ? '(Auto)' : ''}
-                          </label>
-                          <input
-                            type="number"
-                            min="1"
-                            max="360"
-                            value={sessionDuration}
-                            onChange={(e) => {
-                              setSessionDuration(e.target.value);
-                              setIsDurationManual(true);
-                            }}
-                            placeholder="es. 90"
-                            className="w-full bg-slate-900 border border-emerald-500/40 rounded-xl p-2.5 text-sm text-emerald-400 font-black"
-                          />
+                      {/* 2. RACCOGLITORE FEEDBACK ATLETA */}
+                      <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-5 space-y-3 shadow-lg">
+                        <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
+                          <span className="text-xs sm:text-sm font-black bg-gradient-to-r from-emerald-400 to-lime-300 bg-clip-text text-transparent uppercase tracking-wider">
+                            RACCOGLITORE FEEDBACK ATLETA
+                          </span>
+                          <span className="text-[11px] font-mono font-bold text-slate-400">
+                            {collectedFeedbacks.length} {collectedFeedbacks.length === 1 ? 'nota' : 'note'}
+                          </span>
                         </div>
 
-                        <div className="md:col-span-2">
-                          <label className="text-[11px] font-bold text-slate-300 block mb-1">Note ed eventuali Feedback per il Coach:</label>
-                          <input
-                            type="text"
-                            value={durationNotes}
-                            onChange={(e) => setDurationNotes(e.target.value)}
-                            placeholder="Es. Recuperi un po' più lunghi nello Squat..."
-                            className="w-full bg-slate-900 border border-slate-800 rounded-xl p-2.5 text-xs text-white"
-                          />
+                        {collectedFeedbacks.length === 0 ? (
+                          <p className="text-xs text-slate-500 italic py-2">
+                            Nessun feedback salvato finora. Scrivi qui sotto le tue sensazioni sulla seduta!
+                          </p>
+                        ) : (
+                          <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                            {collectedFeedbacks.map(fb => (
+                              <div
+                                key={fb.id}
+                                className="bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2.5 flex items-start justify-between gap-2 text-xs"
+                              >
+                                <div className="space-y-0.5">
+                                  <span className="font-black text-lime-300 block">
+                                    {fb.tag}
+                                  </span>
+                                  <p className="text-slate-200 leading-relaxed">{fb.text}</p>
+                                </div>
+                                <span className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800 text-[10px] font-bold text-emerald-400 shrink-0">
+                                  {fb.type}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* 3. NOTE SULLA SEDUTA */}
+                      <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-5 space-y-3 shadow-lg">
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs sm:text-sm font-black bg-gradient-to-r from-emerald-400 to-lime-300 bg-clip-text text-transparent uppercase tracking-wider">
+                            NOTE SULLA SEDUTA
+                          </label>
+                          {sessionNoteSaved && (
+                            <span className="text-[11px] font-black text-lime-300 bg-lime-400/15 border border-lime-400/30 px-2.5 py-0.5 rounded-full">
+                              ✓ Nota salvata e inviata al Coach
+                            </span>
+                          )}
                         </div>
+
+                        <textarea
+                          rows={3}
+                          value={durationNotes}
+                          onChange={(e) => setDurationNotes(e.target.value)}
+                          placeholder="Scrivi qualcosa sulla seduta..."
+                          className="w-full bg-slate-900 border border-slate-800 focus:border-lime-400 rounded-xl p-3 text-xs sm:text-sm text-white placeholder-slate-500 focus:outline-none"
+                        />
+
+                        <button
+                          type="button"
+                          onClick={saveAthleteSessionNote}
+                          className="w-full py-3 rounded-full bg-gradient-to-r from-emerald-400 to-lime-300 hover:opacity-95 text-black text-xs sm:text-sm font-black tracking-wide shadow-md transition-all"
+                        >
+                          Salva Note Seduta
+                        </button>
                       </div>
                     </div>
+                  );
+                })()}
 
-                    {/* RIEPILOGO AVANZAMENTO & INVIO SEDUTA AL COACH */}
-                    <div className="pt-3 space-y-3">
-                      {(() => {
-                        const dayKey = `${currentActiveTarget}_W${activeDisplayWeek}_${selectedDayTab}`;
-                        const isDayDone = completedDaysMap[dayKey] === true;
-                        const subInfo = submittedSessionsMap[dayKey] || null;
-                        const progress = getDayCompletionProgress(currentActiveTarget, activeDisplayWeek, selectedDayTab);
-                        const pct = progress.totalSets > 0
-                          ? Math.round((progress.completedSets / progress.totalSets) * 100)
-                          : 0;
+                {/* ========================================================= */}
+                {/* BARRA DI NAVIGAZIONE INFERIORE FISSA (3 SCHEDE)           */}
+                {/* ========================================================= */}
+                <nav className="fixed bottom-0 left-0 right-0 z-40 bg-slate-950/95 backdrop-blur-md border-t border-slate-800 px-4 py-2.5">
+                  <div className="max-w-md mx-auto grid grid-cols-3 gap-2 items-center">
+                    {/* 1. CHECK-IN */}
+                    <button
+                      type="button"
+                      onClick={() => setAthleteSubTab('checkin')}
+                      className={`py-2 px-3 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all ${
+                        athleteSubTab === 'checkin'
+                          ? 'bg-gradient-to-r from-emerald-400 to-lime-300 text-black font-black shadow-lg'
+                          : 'text-slate-400 hover:text-white font-bold'
+                      }`}
+                    >
+                      <span className="text-base leading-none">✓</span>
+                      <span className="text-[11px] tracking-wide">Check-in</span>
+                    </button>
 
-                        return (
-                          <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 space-y-3">
-                            {/* Barra Progresso Seduta */}
-                            <div className="space-y-1.5">
-                              <div className="flex items-center justify-between text-xs">
-                                <span className="font-black text-slate-300 uppercase tracking-wider">
-                                  Avanzamento {selectedDayTab} (W{activeDisplayWeek})
-                                </span>
-                                <span className="font-mono font-black text-cyan-400">
-                                  {progress.completedExercises}/{progress.totalExercises} Esercizi • {progress.completedSets}/{progress.totalSets} Serie ({pct}%)
-                                </span>
-                              </div>
-                              <div className="w-full h-2 bg-slate-900 rounded-full overflow-hidden border border-slate-800">
-                                <div
-                                  className={`h-full transition-all duration-500 ${
-                                    isDayDone ? 'bg-emerald-400' : 'bg-gradient-to-r from-cyan-400 to-emerald-400'
-                                  }`}
-                                  style={{ width: `${pct}%` }}
-                                />
-                              </div>
-                            </div>
+                    {/* 2. SCHEDA */}
+                    <button
+                      type="button"
+                      onClick={() => setAthleteSubTab('workout')}
+                      className={`py-2 px-3 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all ${
+                        athleteSubTab === 'workout'
+                          ? 'bg-gradient-to-r from-emerald-400 to-lime-300 text-black font-black shadow-lg'
+                          : 'text-slate-400 hover:text-white font-bold'
+                      }`}
+                    >
+                      <span className="text-base leading-none">📅</span>
+                      <span className="text-[11px] tracking-wide">Scheda</span>
+                    </button>
 
-                            {/* Banner Stato Invio Automatico al Coach */}
-                            {(isDayDone || progress.isAllComplete) ? (
-                              <div className="bg-emerald-500/15 border border-emerald-500/40 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                                <div className="space-y-1">
-                                  <div className="flex items-center gap-2 flex-wrap">
-                                    <span className="px-2.5 py-0.5 rounded-full bg-emerald-500 text-black text-[10px] font-black uppercase tracking-wider">
-                                      ✓ COMPLETATO & INVIATO AUTOMATICAMENTE AL COACH
-                                    </span>
-                                    {subInfo?.submittedAt && (
-                                      <span className="text-[11px] text-emerald-300 font-mono font-bold">
-                                        Trasmesso alle {formatTimeHHMM(subInfo.submittedAt)} ({formatItalianDate(subInfo.submittedDateISO)})
-                                      </span>
-                                    )}
-                                  </div>
-                                  <p className="text-xs text-slate-200">
-                                    Tonnellaggio: <strong className="text-cyan-300">{subInfo?.totalTonnage || 0} kg</strong> • Durata: <strong className="text-emerald-300">{subInfo?.sessionDurationMinutes || sessionDuration} min</strong> • Hooper: <strong className="text-amber-300">{subInfo?.hooper || '-'}/28</strong>
-                                  </p>
-                                </div>
-                                <span className="text-[11px] text-emerald-300/80 font-medium shrink-0">
-                                  Sincronizzazione live attiva
-                                </span>
-                              </div>
-                            ) : (
-                              <div className="bg-slate-900/90 border border-slate-800 rounded-xl px-4 py-3 flex items-center justify-between gap-3">
-                                <span className="text-xs text-slate-300">
-                                  ⚡ Invio istantaneo al Coach al completamento di tutti gli esercizi di <strong className="text-white">{selectedDayTab}</strong>
-                                </span>
-                                <span className="text-[11px] font-mono font-bold text-cyan-400 shrink-0">
-                                  {Math.max(0, progress.totalExercises - progress.completedExercises)} rimasti
-                                </span>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })()}
-                    </div>
+           {/* 3. ANALISI */}
+                    <button
+                      type="button"
+                      onClick={() => setAthleteSubTab('analysis')}
+                      className={`py-2 px-3 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all ${
+                        athleteSubTab === 'analysis'
+                          ? 'bg-gradient-to-r from-emerald-400 to-lime-300 text-black font-black shadow-lg'
+                          : 'text-slate-400 hover:text-white font-bold'
+                      }`}
+                    >
+                      <span className="text-base leading-none">📈</span>
+                      <span className="text-[11px] tracking-wide">Analisi</span>
+                    </button>
                   </div>
-                )}
+         </nav>
 
               </div>
+            </>
             )}
 
           </main>
         </div>
       );
-    }
-
+    }    
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(<App />);
   </script>
